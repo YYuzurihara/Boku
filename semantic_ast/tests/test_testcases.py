@@ -18,7 +18,7 @@ from testcases import generate_test_cases  # noqa: E402
 
 class GenerateTestCases(unittest.TestCase):
     def setUp(self):
-        self.ast = SemanticAST(filters=("even", "ge_k"), map_op=("mul_const", 2), order_op="ascending")
+        self.ast = SemanticAST(filters=("even", "ge_k"), map_ops=(("mul_const", 2),), order_op="ascending")
 
     def test_at_least_20_random_cases_worth_of_coverage(self):
         cases = generate_test_cases(self.ast, seed=42, n_random=24)

@@ -36,10 +36,10 @@ semantic_ast/
 ```
 
 - `filter`: 0〜2個のAND結合された抽出述語（`even`/`odd`/`gt_k`/`ge_k`/`lt_k`/`le_k`/`multiple_of_k`/`positive`/`negative`/`zero`）。同じ排他グループ（例: `even`と`odd`）から2つ選ぶことはできない（常に空集合になるなど無意味な組み合わせを排除するため）。
-- `map`: 0〜1個の変換（`add_k`/`sub_k`/`mul_k`/`negate`/`abs`/`square`、または定数`2`か`3`を取る`mul_const`）。
-- `order`: `ascending`/`descending`/`reverse`のいずれか、または無し。`descending`はソートだが`reverse`は現在の並び順をひっくり返すだけで、意味的に異なる操作として区別している。
-- `slice`: `take_first_k`/`take_last_k`/`step_2`のいずれか、または無し。
-- パイプラインは常に **filter → map → order → slice** の順で実行される（`reference_interpreter.py`）。
+- `map`: 0〜2個の変換を**順序付きで連結**（`add_k`/`sub_k`/`mul_k`/`negate`/`abs`/`square`、または定数`2`〜`10`のいずれかを取る`mul_const`）。同じ演算タイプを2回使うことはできない（例: `mul_const`を2回連結するのは別の`mul_const`の冗長な言い換えになってしまうため）。順序は結果に影響する（`add_k`してから`mul_const(2)` ≠ `mul_const(2)`してから`add_k`）。
+- `order`: `ascending`/`descending`/`reverse`のいずれか、または無し。`descending`はソートだが`reverse`は現在の並び順をひっくり返すだけで、意味的に異なる操作として区別している。ソートや反転を連結しても意味のある多様性は生まれないため、こちらは単一選択のまま。
+- `slice`: 0〜2個の切り出し操作を**順序付きで連結**（`take_first_k`/`take_last_k`/`step_2`）。同じ演算を2回使うことはできない。順序は結果に影響する（例: 先頭k個を取ってから1個おき ≠ 1個おきに取ってから先頭k個）。
+- パイプラインは常に **filter → map → order → slice** の順で実行される（`reference_interpreter.py`）。`map`と`slice`はそれぞれ内部で連結順に適用される。
 
 ## 設計判断: 「1〜3個を組み合わせた問題」の解釈
 
@@ -52,10 +52,10 @@ semantic_ast/
 ```python
 from generator import enumerate_all
 
-all_asts = enumerate_all()  # 3,383種類の意味AST（全て相異なるsemantic_hashを持つ）
+all_asts = enumerate_all()  # 97,464種類の意味AST（全て相異なるsemantic_hashを持つ）
 ```
 
-`30,000〜100,000種類`という`homework.md`の目安は、この構造的な意味ASTの集合そのものではなく、各意味ASTに複数の日本語言い換え・複数のコード構造変換を掛け合わせた後の数量を指す（そちらは教師モデルを使う後続のタスクリスト項目）。このパッケージが担うのは、その掛け合わせ元になる意味ASTの完全な集合を、重複なく・分割済みで用意するところまで。
+`homework.md`の「生成する意味AST 30,000〜100,000種類」という目安は、この構造的な意味ASTの集合そのものの数量を指す。閉じた原子操作の語彙（filter述語10種・mapタイプ7種・order 3種・slice 3種、カテゴリ1〜3個有効）だけでは約3,383種類にしかならず約30倍不足するため、`map`と`slice`をそれぞれ「同一カテゴリ内で最大2個の演算を順序付きで連結できる」ように拡張し、`mul_const`の定数を`2,3`から`2〜10`に広げることで97,464種類まで増やしている（`homework.md`が明示する操作リストの外側に新しい演算を追加しない範囲での拡張）。設計判断の詳細と正確な組み合わせ計算は`schema.py`と`generator.py`のモジュールdocstringを参照。
 
 ### 参照インタプリタ
 
@@ -63,7 +63,7 @@ all_asts = enumerate_all()  # 3,383種類の意味AST（全て相異なるsemant
 from reference_interpreter import interpret
 from schema import SemanticAST
 
-ast = SemanticAST(filters=("even", "ge_k"), map_op=("mul_const", 2), order_op="ascending")
+ast = SemanticAST(filters=("even", "ge_k"), map_ops=(("mul_const", 2),), order_op="ascending")
 interpret(ast, xs=[1, 5, 2, 8, -4, 10, 3], k=3)  # -> [8, 10]
 ```
 

@@ -10,7 +10,8 @@ section. It is the ground truth used to:
   * judge model-generated code at evaluation time (pass@1 / pass@5).
 
 Pipeline order is fixed: filter -> map -> order -> slice (see the design
-note in ``schema.py``).
+note in ``schema.py``). ``map_ops`` and ``slice_ops`` are each applied in
+the sequence order they appear in the semantic AST (up to 2 ops each).
 """
 
 from __future__ import annotations
@@ -55,8 +56,7 @@ def interpret(ast: SemanticAST, xs: list[int], k: int) -> list[int]:
         pred = _FILTER_FUNCS[name]
         result = [x for x in result if pred(x, k)]
 
-    if ast.map_op is not None:
-        name, arg = ast.map_op
+    for name, arg in ast.map_ops:
         fn = _MAP_FUNCS[name]
         result = [fn(x, k, arg) for x in result]
 
@@ -67,11 +67,12 @@ def interpret(ast: SemanticAST, xs: list[int], k: int) -> list[int]:
     elif ast.order_op == "reverse":
         result = list(reversed(result))
 
-    if ast.slice_op == "take_first_k":
-        result = result[:k]
-    elif ast.slice_op == "take_last_k":
-        result = result[-k:]
-    elif ast.slice_op == "step_2":
-        result = result[::2]
+    for op in ast.slice_ops:
+        if op == "take_first_k":
+            result = result[:k]
+        elif op == "take_last_k":
+            result = result[-k:]
+        elif op == "step_2":
+            result = result[::2]
 
     return result

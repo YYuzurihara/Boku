@@ -22,7 +22,7 @@ is inconsistent with homework.md's own worked example, which combines four
 atomic predicates/transforms (`ge_k`, `even`, `mul_const(2)`, `ascending`).
 We resolve this the same way ``sandbox/ast_safety.py`` resolves its own
 literal-reading tension: a semantic AST has (up to) four *category* slots --
-``filters`` (抽出), ``map_op`` (変換), ``order_op`` (並べ替え), ``slice_op``
+``filters`` (抽出), ``map_ops`` (変換), ``order_op`` (並べ替え), ``slice_ops``
 (切り出し) -- and "1〜3個の組み合わせ" is enforced as 1-3 *active category
 slots*, matching the worked example (抽出+変換+並べ替え = 3 categories,
 even though ``filters`` itself carries two AND'd predicates). Within the
@@ -34,6 +34,35 @@ and forbid combining two predicates from the same mutually-exclusive group
 Pipeline order is fixed as filter -> map -> order -> slice. This is the
 order the Japanese problem statements read in (抽出してから変換して並べ替
 えて切り出す) and is what ``reference_interpreter.py`` implements.
+
+Design note on chaining within ``map_ops`` / ``slice_ops``
+------------------------------------------------------------
+homework.md's データ規模 table asks for 30,000-100,000 *distinct* semantic
+ASTs, but the closed vocabulary above (10 filter predicates, 8 map ops, 3
+order ops, 3 slice ops, 1-3 active categories) only enumerates to ~3,383
+structurally distinct points -- about 30x short. Rather than inventing new
+atomic operations outside homework.md's explicit lists (which would also
+grow the tokenizer's vocabulary), we widen two dimensions that are already
+supported by homework's examples and stay within the stated operation
+vocabulary:
+
+1. ``map_ops`` and ``slice_ops`` are each a short *ordered sequence* (0-2
+   distinct op **types**) instead of a single optional op, e.g. "kを加えて
+   から2倍する" (``add_k`` then ``mul_const(2)``) or "先頭からk個を1個おき
+   に取得する" (``take_first_k`` then ``step_2``). Order matters (it's a
+   pipeline), and each op *type* may appear at most once per sequence --
+   e.g. two ``mul_const`` entries are rejected, since ``mul_const(2)`` then
+   ``mul_const(3)`` is just a redundant spelling of ``mul_const(6)`` and
+   would silently duplicate another semantic AST's meaning. ``order_op``
+   is left a single choice: composing two sorts/reverses collapses to one
+   of them, so chaining there would only manufacture fake variety.
+2. ``mul_const``'s constant is drawn from ``MAP_CONST_ARGS`` (2 through 10,
+   i.e. "2倍、3倍する" generalized to any small integer multiple), instead
+   of just ``{2, 3}``.
+
+This raises ``generator.enumerate_all()`` from 3,383 to 97,464 -- within
+homework.md's stated 30,000-100,000 range and ~29x the previous count. See
+``generator.py``'s module docstring for the exact combinatorics.
 """
 
 from __future__ import annotations
@@ -77,10 +106,12 @@ MAX_FILTER_PREDICATES = 2
 
 # Map (transform) operations. Most take no extra argument (they act on k or
 # are fixed); "mul_const" additionally needs an integer argument distinct
-# from k ("2倍、3倍する" in homework.md).
+# from k ("2倍、3倍する" in homework.md, generalized to 2-10 -- see schema.py's
+# module docstring "chaining" design note).
 MAP_OPS_NO_ARG: tuple[str, ...] = ("add_k", "sub_k", "mul_k", "negate", "abs", "square")
-MAP_CONST_ARGS: tuple[int, ...] = (2, 3)
+MAP_CONST_ARGS: tuple[int, ...] = (2, 3, 4, 5, 6, 7, 8, 9, 10)
 ALL_MAP_OP_NAMES: tuple[str, ...] = MAP_OPS_NO_ARG + ("mul_const",)
+MAX_MAP_OPS = 2
 
 # Ordering operations. "descending" sorts; "reverse" merely reverses
 # whatever order the elements are already in (distinct operations per
@@ -90,6 +121,7 @@ ORDER_OPS: tuple[str, ...] = ("ascending", "descending", "reverse")
 # Slicing operations. take_first_k / take_last_k use k implicitly;
 # step_2 implements "1個おきに取得する".
 SLICE_OPS: tuple[str, ...] = ("take_first_k", "take_last_k", "step_2")
+MAX_SLICE_OPS = 2
 
 MapOp = tuple[str, Optional[int]]
 
@@ -102,16 +134,20 @@ class SemanticASTError(ValueError):
 class SemanticAST:
     """A single point in the (filter, map, order, slice) DSL.
 
-    ``filters`` is an AND-combined tuple of 0-2 predicate names.
-    ``map_op`` is ``None`` or ``(name, arg)`` where ``arg`` is ``None``
-    except for ``mul_const``.
-    ``order_op`` / ``slice_op`` are ``None`` or one atomic op name.
+    ``filters`` is an AND-combined tuple of 0-2 predicate names (order does
+    not matter -- it's a set).
+    ``map_ops`` is an ordered sequence of 0-``MAX_MAP_OPS`` ``(name, arg)``
+    pairs (``arg`` is ``None`` except for ``mul_const``); order matters, and
+    each op *name* may appear at most once.
+    ``order_op`` is ``None`` or one atomic op name.
+    ``slice_ops`` is an ordered sequence of 0-``MAX_SLICE_OPS`` op names;
+    order matters, and each name may appear at most once.
     """
 
     filters: tuple[str, ...] = ()
-    map_op: Optional[MapOp] = None
+    map_ops: tuple[MapOp, ...] = ()
     order_op: Optional[str] = None
-    slice_op: Optional[str] = None
+    slice_ops: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         validate(self)
@@ -122,11 +158,11 @@ class SemanticAST:
         cats = []
         if self.filters:
             cats.append("filter")
-        if self.map_op is not None:
+        if self.map_ops:
             cats.append("map")
         if self.order_op is not None:
             cats.append("order")
-        if self.slice_op is not None:
+        if self.slice_ops:
             cats.append("slice")
         return tuple(cats)
 
@@ -136,15 +172,16 @@ class SemanticAST:
     def op_tags(self) -> tuple[str, ...]:
         """Sorted, flattened list of every atomic op used, e.g.
         ``("filter:even", "filter:ge_k", "map:mul_const:2", "order:ascending")``.
-        Used to balance per-operator frequency when sampling/capping."""
+        Used to balance per-operator frequency when sampling/capping.
+        Pipeline position within ``map_ops``/``slice_ops`` is not encoded
+        here (each op type appears at most once per sequence anyway)."""
         tags = [f"filter:{f}" for f in self.filters]
-        if self.map_op is not None:
-            name, arg = self.map_op
+        for name, arg in self.map_ops:
             tags.append(f"map:{name}" if arg is None else f"map:{name}:{arg}")
         if self.order_op is not None:
             tags.append(f"order:{self.order_op}")
-        if self.slice_op is not None:
-            tags.append(f"slice:{self.slice_op}")
+        for s in self.slice_ops:
+            tags.append(f"slice:{s}")
         return tuple(sorted(tags))
 
     # -- (de)serialization ---------------------------------------------------
@@ -152,35 +189,37 @@ class SemanticAST:
     def to_dict(self) -> dict:
         """Matches the shape of homework.md's worked example as closely as
         the schema allows (``filter``/``map``/``order``/``slice`` keys,
-        omitted when inactive)."""
+        omitted when inactive). ``map`` and ``slice`` are lists of ops in
+        pipeline order -- e.g. ``"map": [["add_k"], ["mul_const", 2]]``."""
         d: dict = {}
         if self.filters:
             d["filter"] = list(self.filters)
-        if self.map_op is not None:
-            name, arg = self.map_op
-            d["map"] = [name] if arg is None else [name, arg]
+        if self.map_ops:
+            d["map"] = [
+                [name] if arg is None else [name, arg] for name, arg in self.map_ops
+            ]
         if self.order_op is not None:
             d["order"] = self.order_op
-        if self.slice_op is not None:
-            d["slice"] = [self.slice_op]
+        if self.slice_ops:
+            d["slice"] = list(self.slice_ops)
         return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "SemanticAST":
         filters = tuple(d.get("filter", []))
-        map_raw = d.get("map")
-        map_op: Optional[MapOp] = None
-        if map_raw is not None:
-            map_op = (map_raw[0], map_raw[1] if len(map_raw) > 1 else None)
+        map_raw = d.get("map") or []
+        map_ops = tuple(
+            (item[0], item[1] if len(item) > 1 else None) for item in map_raw
+        )
         order_op = d.get("order")
-        slice_raw = d.get("slice")
-        slice_op = slice_raw[0] if slice_raw else None
-        return cls(filters=filters, map_op=map_op, order_op=order_op, slice_op=slice_op)
+        slice_ops = tuple(d.get("slice") or [])
+        return cls(filters=filters, map_ops=map_ops, order_op=order_op, slice_ops=slice_ops)
 
     def canonical_json(self) -> str:
         """JSON form used for hashing: filters sorted (AND is commutative,
-        so {even, ge_k} and {ge_k, even} must hash identically), keys
-        sorted, no incidental whitespace."""
+        so {even, ge_k} and {ge_k, even} must hash identically), map/slice
+        left in pipeline order (order changes the result), keys sorted, no
+        incidental whitespace."""
         d = self.to_dict()
         if "filter" in d:
             d["filter"] = sorted(d["filter"])
@@ -214,8 +253,10 @@ def validate(ast: SemanticAST) -> None:
     if len(set(ast.filters)) != len(ast.filters):
         raise SemanticASTError(f"duplicate filter predicate in {ast.filters}")
 
-    if ast.map_op is not None:
-        name, arg = ast.map_op
+    if len(ast.map_ops) > MAX_MAP_OPS:
+        raise SemanticASTError(f"at most {MAX_MAP_OPS} map ops allowed, got {len(ast.map_ops)}")
+    seen_map_names: set[str] = set()
+    for name, arg in ast.map_ops:
         if name in MAP_OPS_NO_ARG:
             if arg is not None:
                 raise SemanticASTError(f"map op {name!r} takes no argument, got {arg!r}")
@@ -224,12 +265,22 @@ def validate(ast: SemanticAST) -> None:
                 raise SemanticASTError(f"mul_const argument must be one of {MAP_CONST_ARGS}, got {arg!r}")
         else:
             raise SemanticASTError(f"unknown map op: {name!r}")
+        if name in seen_map_names:
+            raise SemanticASTError(f"map op {name!r} appears more than once in {ast.map_ops}")
+        seen_map_names.add(name)
 
     if ast.order_op is not None and ast.order_op not in ORDER_OPS:
         raise SemanticASTError(f"unknown order op: {ast.order_op!r}")
 
-    if ast.slice_op is not None and ast.slice_op not in SLICE_OPS:
-        raise SemanticASTError(f"unknown slice op: {ast.slice_op!r}")
+    if len(ast.slice_ops) > MAX_SLICE_OPS:
+        raise SemanticASTError(f"at most {MAX_SLICE_OPS} slice ops allowed, got {len(ast.slice_ops)}")
+    seen_slice_names: set[str] = set()
+    for s in ast.slice_ops:
+        if s not in SLICE_OPS:
+            raise SemanticASTError(f"unknown slice op: {s!r}")
+        if s in seen_slice_names:
+            raise SemanticASTError(f"slice op {s!r} appears more than once in {ast.slice_ops}")
+        seen_slice_names.add(s)
 
     num_categories = ast.num_categories()
     if not (1 <= num_categories <= 3):

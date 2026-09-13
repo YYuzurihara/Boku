@@ -18,7 +18,7 @@ from schema import SemanticAST  # noqa: E402
 class InterpretMatchesHomeworkExample(unittest.TestCase):
     def test_worked_example(self):
         # "整数リストxsからk以上の偶数だけを残し、それぞれを2倍して昇順に並べる"
-        ast = SemanticAST(filters=("even", "ge_k"), map_op=("mul_const", 2), order_op="ascending")
+        ast = SemanticAST(filters=("even", "ge_k"), map_ops=(("mul_const", 2),), order_op="ascending")
         xs = [1, 5, 2, 8, -4, 10, 3]
         k = 3
         self.assertEqual(
@@ -71,13 +71,18 @@ class InterpretMapOps(unittest.TestCase):
         self.k = 4
 
     def test_arithmetic(self):
-        self.assertEqual(interpret(SemanticAST(map_op=("add_k", None)), self.xs, self.k), [x + self.k for x in self.xs])
-        self.assertEqual(interpret(SemanticAST(map_op=("sub_k", None)), self.xs, self.k), [x - self.k for x in self.xs])
-        self.assertEqual(interpret(SemanticAST(map_op=("mul_k", None)), self.xs, self.k), [x * self.k for x in self.xs])
-        self.assertEqual(interpret(SemanticAST(map_op=("mul_const", 3)), self.xs, self.k), [x * 3 for x in self.xs])
-        self.assertEqual(interpret(SemanticAST(map_op=("negate", None)), self.xs, self.k), [-x for x in self.xs])
-        self.assertEqual(interpret(SemanticAST(map_op=("abs", None)), self.xs, self.k), [abs(x) for x in self.xs])
-        self.assertEqual(interpret(SemanticAST(map_op=("square", None)), self.xs, self.k), [x ** 2 for x in self.xs])
+        self.assertEqual(interpret(SemanticAST(map_ops=(("add_k", None),)), self.xs, self.k), [x + self.k for x in self.xs])
+        self.assertEqual(interpret(SemanticAST(map_ops=(("sub_k", None),)), self.xs, self.k), [x - self.k for x in self.xs])
+        self.assertEqual(interpret(SemanticAST(map_ops=(("mul_k", None),)), self.xs, self.k), [x * self.k for x in self.xs])
+        self.assertEqual(interpret(SemanticAST(map_ops=(("mul_const", 3),)), self.xs, self.k), [x * 3 for x in self.xs])
+        self.assertEqual(interpret(SemanticAST(map_ops=(("negate", None),)), self.xs, self.k), [-x for x in self.xs])
+        self.assertEqual(interpret(SemanticAST(map_ops=(("abs", None),)), self.xs, self.k), [abs(x) for x in self.xs])
+        self.assertEqual(interpret(SemanticAST(map_ops=(("square", None),)), self.xs, self.k), [x ** 2 for x in self.xs])
+
+    def test_chained_ops_apply_in_sequence(self):
+        # add_k then mul_const(2): (x + k) * 2, not x + k*2
+        ast = SemanticAST(map_ops=(("add_k", None), ("mul_const", 2)))
+        self.assertEqual(interpret(ast, self.xs, self.k), [(x + self.k) * 2 for x in self.xs])
 
 
 class InterpretOrderOps(unittest.TestCase):
@@ -92,20 +97,28 @@ class InterpretSliceOps(unittest.TestCase):
     def test_take_first_last_and_step(self):
         xs = list(range(10))
         k = 3
-        self.assertEqual(interpret(SemanticAST(slice_op="take_first_k"), xs, k), xs[:k])
-        self.assertEqual(interpret(SemanticAST(slice_op="take_last_k"), xs, k), xs[-k:])
-        self.assertEqual(interpret(SemanticAST(slice_op="step_2"), xs, k), xs[::2])
+        self.assertEqual(interpret(SemanticAST(slice_ops=("take_first_k",)), xs, k), xs[:k])
+        self.assertEqual(interpret(SemanticAST(slice_ops=("take_last_k",)), xs, k), xs[-k:])
+        self.assertEqual(interpret(SemanticAST(slice_ops=("step_2",)), xs, k), xs[::2])
 
     def test_take_last_k_longer_than_list(self):
         xs = [1, 2]
-        self.assertEqual(interpret(SemanticAST(slice_op="take_last_k"), xs, 10), xs)
+        self.assertEqual(interpret(SemanticAST(slice_ops=("take_last_k",)), xs, 10), xs)
+
+    def test_chained_slice_ops_apply_in_sequence(self):
+        xs = list(range(10))
+        k = 4
+        ast = SemanticAST(slice_ops=("take_first_k", "step_2"))
+        self.assertEqual(interpret(ast, xs, k), xs[:k][::2])
+        reversed_ast = SemanticAST(slice_ops=("step_2", "take_first_k"))
+        self.assertEqual(interpret(reversed_ast, xs, k), xs[::2][:k])
 
 
 class InterpretPipelineOrder(unittest.TestCase):
     def test_filter_then_map_then_order(self):
         # at most 3 active categories (schema.py's design note), so this
         # exercises filter -> map -> order; slice ordering is covered below.
-        ast = SemanticAST(filters=("positive",), map_op=("mul_const", 2), order_op="descending")
+        ast = SemanticAST(filters=("positive",), map_ops=(("mul_const", 2),), order_op="descending")
         xs = [-5, 1, -2, 3, 8, 2]
         k = 2
         expected_filtered = [x for x in xs if x > 0]
@@ -114,7 +127,7 @@ class InterpretPipelineOrder(unittest.TestCase):
         self.assertEqual(interpret(ast, xs, k), expected)
 
     def test_order_then_slice(self):
-        ast = SemanticAST(order_op="ascending", slice_op="take_first_k")
+        ast = SemanticAST(order_op="ascending", slice_ops=("take_first_k",))
         xs = [9, -1, 4, 2, 7]
         k = 3
         expected = sorted(xs)[:k]
