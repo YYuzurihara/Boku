@@ -52,10 +52,10 @@ semantic_ast/
 ```python
 from generator import enumerate_all
 
-all_asts = enumerate_all()  # 97,464種類の意味AST（全て相異なるsemantic_hashを持つ）
+all_asts = enumerate_all()  # 40,589種類の意味AST（全て相異なるsemantic_hashを持つ）
 ```
 
-`homework.md`の「生成する意味AST 30,000〜100,000種類」という目安は、この構造的な意味ASTの集合そのものの数量を指す。閉じた原子操作の語彙（filter述語10種・mapタイプ7種・order 3種・slice 3種、カテゴリ1〜3個有効）だけでは約3,383種類にしかならず約30倍不足するため、`map`と`slice`をそれぞれ「同一カテゴリ内で最大2個の演算を順序付きで連結できる」ように拡張し、`mul_const`の定数を`2,3`から`2〜10`に広げることで97,464種類まで増やしている（`homework.md`が明示する操作リストの外側に新しい演算を追加しない範囲での拡張）。設計判断の詳細と正確な組み合わせ計算は`schema.py`と`generator.py`のモジュールdocstringを参照。
+`homework.md`の「生成する意味AST 30,000〜100,000種類」という目安は、この構造的な意味ASTの集合そのものの数量を指す。閉じた原子操作の語彙（filter述語10種・mapタイプ7種［`mul_const`の定数は`homework.md`の例示どおり2,3のみ］・order 3種・slice 3種、カテゴリ1〜3個有効）だけでは約3,383種類にしかならず約9倍不足するため、`map`と`slice`をそれぞれ「同一カテゴリ内で最大2個の演算を順序付きで連結できる」ように拡張することで40,589種類まで増やしている（`homework.md`が明示する操作リストの外側に新しい演算を追加せず、`mul_const`の定数も`homework.md`の例示（2倍、3倍）から広げない範囲での拡張）。設計判断の詳細と正確な組み合わせ計算は`schema.py`と`generator.py`のモジュールdocstringを参照。
 
 ### 参照インタプリタ
 

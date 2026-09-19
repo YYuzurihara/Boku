@@ -22,13 +22,13 @@ class EnumerateAll(unittest.TestCase):
 
     def test_nonempty_and_reasonably_sized(self):
         # exact combinatorics documented in generator.py's module docstring
-        # (97,464); a loose bound here just guards against a wildly broken
+        # (40,589); a loose bound here just guards against a wildly broken
         # enumeration.
         self.assertGreater(len(self.all_asts), 30000)
         self.assertLess(len(self.all_asts), 150000)
 
     def test_exact_count_matches_documented_combinatorics(self):
-        self.assertEqual(len(self.all_asts), 97464)
+        self.assertEqual(len(self.all_asts), 40589)
 
     def test_every_ast_has_1_to_3_categories(self):
         for ast in self.all_asts:

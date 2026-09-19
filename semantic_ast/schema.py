@@ -38,31 +38,30 @@ order the Japanese problem statements read in (抽出してから変換して並
 Design note on chaining within ``map_ops`` / ``slice_ops``
 ------------------------------------------------------------
 homework.md's データ規模 table asks for 30,000-100,000 *distinct* semantic
-ASTs, but the closed vocabulary above (10 filter predicates, 8 map ops, 3
-order ops, 3 slice ops, 1-3 active categories) only enumerates to ~3,383
-structurally distinct points -- about 30x short. Rather than inventing new
-atomic operations outside homework.md's explicit lists (which would also
-grow the tokenizer's vocabulary), we widen two dimensions that are already
-supported by homework's examples and stay within the stated operation
-vocabulary:
+ASTs, but the closed vocabulary above (10 filter predicates, 8 map choices
+with ``mul_const``'s constant fixed to homework.md's literal ``{2, 3}``
+example, 3 order ops, 3 slice ops, 1-3 active categories) only enumerates
+to ~3,383 structurally distinct points -- about 9x short. Rather than
+inventing new atomic operations outside homework.md's explicit lists (which
+would also grow the tokenizer's vocabulary), or widening ``mul_const``
+beyond its literal "2倍、3倍する" example, we widen the one dimension
+already implied by chaining several operations together: ``map_ops`` and
+``slice_ops`` are each a short *ordered sequence* (0-2 distinct op
+**types**) instead of a single optional op, e.g. "kを加えてから2倍する"
+(``add_k`` then ``mul_const(2)``) or "先頭からk個を1個おきに取得する"
+(``take_first_k`` then ``step_2``). Order matters (it's a pipeline), and
+each op *type* may appear at most once per sequence -- e.g. two
+``mul_const`` entries are rejected, since ``mul_const(2)`` then
+``mul_const(3)`` is just a redundant spelling of ``mul_const(6)`` and would
+silently duplicate another semantic AST's meaning. ``order_op`` is left a
+single choice: composing two sorts/reverses collapses to one of them, so
+chaining there would only manufacture fake variety.
 
-1. ``map_ops`` and ``slice_ops`` are each a short *ordered sequence* (0-2
-   distinct op **types**) instead of a single optional op, e.g. "kを加えて
-   から2倍する" (``add_k`` then ``mul_const(2)``) or "先頭からk個を1個おき
-   に取得する" (``take_first_k`` then ``step_2``). Order matters (it's a
-   pipeline), and each op *type* may appear at most once per sequence --
-   e.g. two ``mul_const`` entries are rejected, since ``mul_const(2)`` then
-   ``mul_const(3)`` is just a redundant spelling of ``mul_const(6)`` and
-   would silently duplicate another semantic AST's meaning. ``order_op``
-   is left a single choice: composing two sorts/reverses collapses to one
-   of them, so chaining there would only manufacture fake variety.
-2. ``mul_const``'s constant is drawn from ``MAP_CONST_ARGS`` (2 through 10,
-   i.e. "2倍、3倍する" generalized to any small integer multiple), instead
-   of just ``{2, 3}``.
-
-This raises ``generator.enumerate_all()`` from 3,383 to 97,464 -- within
-homework.md's stated 30,000-100,000 range and ~29x the previous count. See
-``generator.py``'s module docstring for the exact combinatorics.
+This raises ``generator.enumerate_all()`` from 3,383 to 40,589 -- within
+homework.md's stated 30,000-100,000 range and ~12x the previous count,
+while ``mul_const``'s constant stays exactly homework.md's literal
+``{2, 3}``. See ``generator.py``'s module docstring for the exact
+combinatorics.
 """
 
 from __future__ import annotations
@@ -105,11 +104,11 @@ FILTER_OP_TO_GROUP: dict[str, str] = {
 MAX_FILTER_PREDICATES = 2
 
 # Map (transform) operations. Most take no extra argument (they act on k or
-# are fixed); "mul_const" additionally needs an integer argument distinct
-# from k ("2倍、3倍する" in homework.md, generalized to 2-10 -- see schema.py's
-# module docstring "chaining" design note).
+# are fixed); "mul_const" additionally needs an integer argument -- kept to
+# exactly homework.md's literal "2倍、3倍する" example rather than widened
+# (see schema.py's module docstring "chaining" design note).
 MAP_OPS_NO_ARG: tuple[str, ...] = ("add_k", "sub_k", "mul_k", "negate", "abs", "square")
-MAP_CONST_ARGS: tuple[int, ...] = (2, 3, 4, 5, 6, 7, 8, 9, 10)
+MAP_CONST_ARGS: tuple[int, ...] = (2, 3)
 ALL_MAP_OP_NAMES: tuple[str, ...] = MAP_OPS_NO_ARG + ("mul_const",)
 MAX_MAP_OPS = 2
 
