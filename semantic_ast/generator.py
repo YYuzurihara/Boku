@@ -2,20 +2,21 @@
 
 homework.md's データ規模 table asks for 30,000-100,000 *distinct* semantic
 ASTs. The closed atomic-operation vocabulary alone (10 filter predicates, 8
-map op types, 3 order ops, 3 slice op types, 1-3 active categories) only
-reaches ~3,383 structurally distinct points. To close that ~30x gap without
-inventing operations outside homework.md's explicit lists, ``map_ops`` and
-``slice_ops`` are each an ordered sequence of up to ``MAX_MAP_OPS`` /
-``MAX_SLICE_OPS`` distinct op types (see schema.py's module docstring,
-"Design note on chaining"), and ``mul_const`` draws its constant from a
-wider range (2 through 10 instead of just 2-3). This raises the total to:
+map choices with ``mul_const`` fixed to homework.md's literal ``{2, 3}``
+example, 3 order ops, 3 slice op types, 1-3 active categories) only reaches
+~3,383 structurally distinct points. To close that gap without inventing
+operations outside homework.md's explicit lists, or widening ``mul_const``
+beyond its literal "2倍、3倍する" example, ``map_ops`` and ``slice_ops`` are
+each an ordered sequence of up to ``MAX_MAP_OPS`` / ``MAX_SLICE_OPS``
+distinct op types (see schema.py's module docstring, "Design note on
+chaining"). This raises the total to:
 
     filters:  46  (0, 1, or 2 AND'd predicates from different groups)
-    map_ops: 154  (0, 1, or 2 ordered distinct-type ops; mul_const x9 consts)
+    map_ops:  63  (0, 1, or 2 ordered distinct-type ops; mul_const x2 consts)
     order:     4  (none, or one of 3 ops -- no chaining, see schema.py)
     slice:    10  (0, 1, or 2 ordered distinct-type ops)
 
-    46 * 154 * 4 * 10 = 283,360 raw combinations, of which 97,464 keep to
+    46 * 63 * 4 * 10 = 115,920 raw combinations, of which 40,589 keep to
     1-3 active categories (``count_all()`` confirms this exactly).
 """
 
