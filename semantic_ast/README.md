@@ -22,15 +22,12 @@ semantic_ast/
   split.py                   重複除去・層化train/val/test分割・漏洩検査・ラベル別上限
   demo.py                    上記を一気通貫で実行し semantic_ast/out/*.jsonl を書き出す
 
-  ja_prompts.py              THIRD_PARTY.mdのプロンプト（system prompt・テンプレート(a)〜(d)・代入値表・出力JSONスキーマ）のコード化
-  ja_teacher.py              vLLM経由でQwen3-4B-AWQに問い合わせ、表現辞書と生成ログを書き出す
-  ja_dictionary.py           表現辞書（JSON）の保存・読み込み・構造検証
-  ja_generator.py            意味AST→日本語指示文の結合（ja_generator_plan.md 2章）と、結合結果の保存
-  ja_demo.py                 表現辞書→結合→保存→読み戻し→再現性検証を一気通貫で実行
-
-  expressions/               表現辞書と生成ログ（ja_teacher.pyの出力、人間チェックの対象）
-  tests/                     単体テスト（130件、外部依存なし。ja_*のテストもGPU・モデル不要）
+  expressions_ja/            意味AST→日本語指示文（instruction_ja）の生成。コードも表現辞書もここ（expressions_ja/README.md）
+  expressions_code/          意味AST→参照コード（reference_code）の生成（未着手）
+  tests/                     単体テスト（164件、外部依存なし。expressions_ja/のテストもGPU・モデル不要）
 ```
+
+日本語指示文の生成は[expressions_ja/README.md](expressions_ja/README.md)に分けてある（プロンプト・表現辞書・結合規則・結合契約）。テストだけはパッケージ共通の`tests/`に置いたままにしている。
 
 ## 意味ASTのスキーマ
 
@@ -106,76 +103,14 @@ python semantic_ast/demo.py
 
 全列挙→重複除去→層化分割→漏洩検査→ラベル別上限→テストケース生成、を実行して`semantic_ast/out/{train,val,test}.jsonl`を書き出す（`out/`は生成物なので`.gitignore`済み）。各レコードは`homework.md`のデータレコード例のうち`spec_id`/`semantic_ast`/`semantic_hash`/`tests`に対応する。`instruction_ja`/`reference_code`/`code_style`等は、教師モデルによる日本語表現生成・コードの構造的変換という後続のタスクリスト項目で埋める。
 
-### 日本語指示文の生成（表現辞書 → 結合 → 保存）
+### 日本語指示文の生成
 
-`ja_generator_plan.md`の二段階方式を実装したもの。教師モデルに問い合わせるのは**原子操作の言い方だけ**（表現辞書キー1つにつき1リクエスト、計26件）で、40,589件の意味AST→日本語文は表現辞書からのサンプリングとテンプレート結合という決定的な処理で行う。
-
-#### 1. プロンプト（`ja_prompts.py`）
-
-`THIRD_PARTY.md`「プリミティブへの問い合わせプロンプト」のsystem prompt・テンプレート(a)〜(d)・代入値表・出力JSONスキーマをそのまま写したモジュール。**文面の正はあくまで`THIRD_PARTY.md`**で、こちらはその機械可読なコピー。
+表現辞書の生成（教師モデルへの問い合わせ）と、意味AST→`instruction_ja`の結合は`expressions_ja/`に分けてある。プロンプト・表現辞書の形式・結合規則・結合契約は[expressions_ja/README.md](expressions_ja/README.md)を参照。
 
 ```bash
-python semantic_ast/ja_prompts.py                # 全プロンプトを表示
-python semantic_ast/ja_prompts.py filter:ge_k    # 1件だけ表示
+python semantic_ast/expressions_ja/ja_teacher.py   # 表現辞書を生成（要GPU）
+python semantic_ast/expressions_ja/ja_demo.py      # 表現辞書→結合→保存→再現性検証
 ```
-
-プロンプトはテンプレートIDと代入値で一意に決まるので、`prompt_sha256()`が`homework.md`の要求する「プロンプトのハッシュ値」になる。
-
-#### 2. 表現辞書の生成（`ja_teacher.py`）
-
-```bash
-python semantic_ast/ja_teacher.py                      # 全キーを生成
-python semantic_ast/ja_teacher.py --keys filter:ge_k   # 一部だけ再生成（--merge で既存に上書き）
-python semantic_ast/ja_teacher.py --dry-run            # モデルを読み込まずプロンプトとログだけ確認
-```
-
-`THIRD_PARTY.md`「呼び出し方法（vLLM 0.29.0）」の通り、非thinkingモード（`chat_template_kwargs={"enable_thinking": False}`）と構造化出力（`StructuredOutputsParams(json=...)`）で呼ぶ。出力は2ファイル:
-
-- `expressions/candidates.json` — 表現辞書本体（下記の形式。人間チェックの対象）
-- `expressions/generation_log.jsonl` — 1プリミティブ1行。`homework.md`の記録項目（モデル名・revision・量子化方式・推論ライブラリ+バージョン・system prompt・sampling設定・seed・生成日時・プロンプトのハッシュ値）と**生の応答文字列**を残す
-
-モデルの応答が壊れていてもこの段階では修正せず、そのまま保存してログに問題を書き出す（直すかどうかは人間チェックの判断であり、生成器の仕事ではない）。
-
-#### 3. 表現辞書の形式（`ja_dictionary.py`）
-
-```json
-{
-  "filter:ge_k": {"slot_type": "ADNOMINAL", "expressions": ["k以上の", "k以上である"]},
-  "map:add_k": {"slot_type": "ACTION_PAIR",
-                "expressions": [{"terminal": "kを加える", "te": "kを加えて"}]},
-  "frame:opening": {"slot_type": "TEXT", "expressions": ["整数リストxsから、"]}
-}
-```
-
-`ExpressionDictionary.load(path)`は**構造だけ**を検証する（スロット型どおりの形か、空でないか、`frame:filter_verb`が`{frag}`をちょうど1個持つか）。日本語として自然か・意味が変わっていないかは人間チェックの領分なので、変な表現もそのまま保存・往復する。
-
-#### 4. 意味ASTへの対応づけ（`ja_generator.py`）
-
-```python
-from ja_dictionary import ExpressionDictionary
-from ja_generator import render_variants, instruction_record, save_instructions
-from schema import SemanticAST
-
-d = ExpressionDictionary.load("semantic_ast/expressions/candidates.json")
-ast = SemanticAST(filters=("ge_k", "even"), map_ops=(("add_k", None), ("mul_const", 2)), order_op="ascending")
-renderings = render_variants(ast, d, n=3, seed=0)
-# 辞書が ja_generator_plan.md 2.6 の例どおりの表現を持つ場合の出力:
-# 「整数リストxsから、k以上の偶数の要素だけを残し、kを加えてから2倍して、昇順に並べるsolve関数を書いてください。」
-# 実際の文面は辞書の中身しだいなので、変な表現は人間チェックで辞書側を直す（生成器やプロンプトはいじらない）。
-save_instructions([instruction_record(ast, renderings, d, spec_id="train-000000")], "out/instructions_train.jsonl")
-```
-
-結合規則は`ja_generator_plan.md`2章そのまま（filter→map→order→sliceの順、最後のアクティブカテゴリだけ終止形、チェインは`te形+から`、`{frag}`と`N`の置換）。`ja_generator_plan.md`5章の未確定事項だった読点の扱いは、**生成器側で一律に「、」を付与する**（表現辞書側の末尾「、」は重複しないよう1つだけ剥がす）方に決めた。
-
-保存レコードには文そのもの（`instruction_ja`）に加えて、**どの辞書エントリのどのインデックスを使ったか**（`renderings[].choices`）と辞書のハッシュ（`dictionary_sha256`）を残す。`render_from_record()`はこの記録だけから同じ文を再構成するので、保存された日本語が辞書から再現可能であることを後からいつでも検査できる。
-
-#### 5. 一気通貫（`ja_demo.py`）
-
-```bash
-python semantic_ast/ja_demo.py --variants 3
-```
-
-表現辞書を読む→`out/{train,val,test}.jsonl`の意味ASTに対して結合→`out/instructions_{split}.jsonl`に保存→読み戻して1件ずつ再生成し、保存された文と一致するかを検証する（`demo.py`未実行なら代わりに構成パターン網羅のサンプルを列挙して使う）。
 
 ### 単体テスト
 
@@ -185,7 +120,7 @@ python -m unittest discover -s semantic_ast/tests -v
 
 ## このパッケージが担っていないこと（後続のタスクリスト項目）
 
-- 生成された表現の人間によるチェック・承認（`expressions/candidates.json`を確認して`expressions/approved.json`にするフロー。`ja_demo.py --dictionary`で承認済み辞書に差し替えられる）
-- 意味ASTに基づくコードの構造的変換（コード生成器）
+- 生成された日本語表現の人間によるチェック・承認（`expressions_ja/README.md`「このディレクトリが担っていないこと」）
+- 意味ASTに基づくコードの構造的変換（コード生成器。`expressions_code/`）
 - 生成コードの`sandbox/`によるサンドボックス実行検証
 - BPEトークナイザ・モデル本体・学習・評価

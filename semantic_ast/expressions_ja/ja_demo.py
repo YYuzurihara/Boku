@@ -4,7 +4,7 @@ save/load round trip.
 Pipeline exercised here (the right-hand half of ja_generator_plan.md's
 diagram):
 
-    expressions/candidates.json  (ja_teacher.py output, or --dictionary)
+    candidates.json  (ja_teacher.py output, or --dictionary)
         -> ja_dictionary.ExpressionDictionary  (structural validation)
         -> ja_generator.render_variants        (per semantic AST)
         -> out/instructions_<split>.jsonl      (save)
@@ -20,9 +20,9 @@ has been run; otherwise a small deterministic sample is enumerated on the
 spot, so this script is useful before the full dataset exists.
 
 Usage:
-    python semantic_ast/ja_demo.py
-    python semantic_ast/ja_demo.py --dictionary semantic_ast/expressions/approved.json
-    python semantic_ast/ja_demo.py --limit 50 --variants 5
+    python semantic_ast/expressions_ja/ja_demo.py
+    python semantic_ast/expressions_ja/ja_demo.py --dictionary semantic_ast/expressions_ja/approved.json
+    python semantic_ast/expressions_ja/ja_demo.py --limit 50 --variants 5
 """
 
 from __future__ import annotations
@@ -33,9 +33,14 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from generator import enumerate_all
-from ja_dictionary import CANDIDATES_PATH, ExpressionDictionary, ExpressionDictionaryError
-from ja_generator import (
+# generator.py / schema.py live one level up (semantic_ast/), which is not on
+# sys.path when this script is run from its own directory.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from generator import enumerate_all  # noqa: E402
+from ja_dictionary import CANDIDATES_PATH, ExpressionDictionary, ExpressionDictionaryError  # noqa: E402
+from ja_generator import (  # noqa: E402
+    contract_problems,
     instruction_record,
     leftover_placeholders,
     load_instructions,
@@ -43,9 +48,10 @@ from ja_generator import (
     render_variants,
     save_instructions,
 )
-from schema import SemanticAST, SemanticASTError
+from schema import SemanticAST, SemanticASTError  # noqa: E402
 
-OUT_DIR = Path(__file__).resolve().parent / "out"
+# demo.py's splits and this script's output both live in semantic_ast/out/.
+OUT_DIR = Path(__file__).resolve().parent.parent / "out"
 SPLITS = ("train", "val", "test")
 SEED = 0
 
@@ -113,7 +119,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         dictionary = ExpressionDictionary.load(args.dictionary, strict=True)
     except ExpressionDictionaryError as exc:
         print(f"cannot use the expression dictionary:\n{exc}", file=sys.stderr)
-        print("\n(run: python semantic_ast/ja_teacher.py  to generate one)", file=sys.stderr)
+        print("\n(run: python semantic_ast/expressions_ja/ja_teacher.py  to generate one)", file=sys.stderr)
         return 1
 
     missing = dictionary.missing_keys()
@@ -121,6 +127,16 @@ def main(argv: Optional[list[str]] = None) -> int:
     print(f"  expressions per key: {dictionary.counts()}")
     if missing:
         print(f"  missing keys (renders needing them will fail): {', '.join(missing)}")
+
+    # Not a failure: the dictionary is still the candidates file until a human
+    # has been through it. Reported up front so the odd sentences printed
+    # below can be read off against the entries that caused them.
+    contract = contract_problems(dictionary)
+    if contract:
+        print(f"  {len(contract)} expression(s) break the combination contract, e.g.:")
+        for problem in contract[:3]:
+            print(f"    - {problem}")
+        print("    (full list: python semantic_ast/expressions_ja/ja_teacher.py --report-contract)")
 
     sources: list[tuple[str, list[tuple[str, SemanticAST]]]] = []
     for split in SPLITS:

@@ -11,7 +11,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+_SEMANTIC_AST = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_SEMANTIC_AST))
+sys.path.insert(0, str(_SEMANTIC_AST / "expressions_ja"))
 
 from ja_dictionary import ExpressionDictionary  # noqa: E402
 from ja_prompts import ACTION_PAIR, PRIMITIVES  # noqa: E402
@@ -49,8 +51,16 @@ _ACTION_PAIRS = {
 }
 
 _TEXT = {
-    "frame:opening": "整数リストxsから、",
+    # neutral on purpose: the opening is picked without knowing which category
+    # comes first, so 「整数リストxsから、」 (which presupposes extraction) is
+    # exactly what ja_generator.contract_problems rejects
+    "frame:opening": "整数のリストxsについて、",
     "frame:closing": "solve関数を書いてください。",
+}
+
+# Second ACTION_PAIR variants that a generic prefix cannot produce.
+_SECOND_PAIRS = {
+    "frame:filter_verb": {"terminal": "{frag}要素を抽出する", "te": "{frag}要素を抽出し"},
 }
 
 
@@ -66,7 +76,11 @@ def fixture_dictionary(extra_variants: bool = False) -> ExpressionDictionary:
             terminal, te = _ACTION_PAIRS[key]
             entry: list = [{"terminal": terminal, "te": te}]
             if extra_variants:
-                entry.append({"terminal": terminal + "こと", "te": te + "から"})
+                # the second variant has to be a different string that still
+                # satisfies ja_generator.contract_problems: a terminal ending
+                # in a verb, a te form 「から」 can attach to, and -- for the
+                # filter frame -- nothing in front of {frag}
+                entry.append(_SECOND_PAIRS.get(key) or {"terminal": "きちんと" + terminal, "te": "きちんと" + te})
         else:
             text = _ADNOMINAL.get(key) or _TEXT[key]
             entry = [text]

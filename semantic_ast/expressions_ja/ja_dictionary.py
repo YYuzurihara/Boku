@@ -9,12 +9,12 @@ per expression-dictionary key, top level keyed by that key:
       "filter:ge_k": {"slot_type": "ADNOMINAL", "expressions": ["k以上の", ...]},
       "map:add_k":   {"slot_type": "ACTION_PAIR",
                       "expressions": [{"terminal": "kを加える", "te": "kを加えて"}, ...]},
-      "frame:opening": {"slot_type": "TEXT", "expressions": ["整数リストxsから、", ...]}
+      "frame:opening": {"slot_type": "TEXT", "expressions": ["整数のリストxsについて、", ...]}
     }
 
 Provenance (model / revision / sampling / seed / prompt hash / timestamp)
 deliberately does *not* live in this file: THIRD_PARTY.md puts it in the
-generation log instead (``expressions/generation_log.jsonl``, written by
+generation log instead (``generation_log.jsonl`` next to this file, written by
 ja_teacher.py), which keeps the dictionary itself diffable and hand-editable
 for the human approval step ("人間による表現チェック" in task_list.md).
 
@@ -39,7 +39,9 @@ from ja_prompts import ADNOMINAL, FRAG_PLACEHOLDER, PRIMITIVES, TEXT
 # (ACTION_PAIR); ja_generator.py picks the form it needs per sentence position.
 Expression = Union[str, dict[str, str]]
 
-DEFAULT_DIR = Path(__file__).resolve().parent / "expressions"
+# The dictionary and its generation log live next to the modules that write
+# and read them, in semantic_ast/expressions_ja/.
+DEFAULT_DIR = Path(__file__).resolve().parent
 CANDIDATES_PATH = DEFAULT_DIR / "candidates.json"
 APPROVED_PATH = DEFAULT_DIR / "approved.json"
 

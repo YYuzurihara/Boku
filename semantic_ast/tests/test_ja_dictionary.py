@@ -12,7 +12,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+_SEMANTIC_AST = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_SEMANTIC_AST))
+sys.path.insert(0, str(_SEMANTIC_AST / "expressions_ja"))
 
 from ja_dictionary import ExpressionDictionary, ExpressionDictionaryError, merge  # noqa: E402
 from ja_fixture import fixture_dictionary  # noqa: E402

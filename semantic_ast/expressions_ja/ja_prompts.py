@@ -17,13 +17,9 @@ one per dictionary key that ja_generator.py can actually ask for. The
 discrepancy is left for the document to resolve; nothing here depends on
 the count.
 
-Two further spots where THIRD_PARTY.md disagrees with itself, both left
-as-is on purpose (the templates are what gets sent):
-
-* template (a) says "リスト xs の要素に対する", while the rendered example
-  under "### 具体例" says "リストの要素に対する";
-* template (a)/(b) put ``{var_note}`` second in the 制約 list, the examples
-  put it first.
+The wording of the system prompt and of templates (a)-(d) is checked
+against THIRD_PARTY.md by ``tests/test_ja_prompts.py``, so the two cannot
+drift apart silently.
 
 Because a prompt is fully determined by (template id, substitution values),
 its hash is reproducible at any time; ``prompt_record()`` emits that hash
@@ -65,6 +61,8 @@ SYSTEM_PROMPT = """あなたは、Pythonの整数リスト処理関数 solve(xs,
 - 与えられた1つの操作について、日本語の言い換え表現をできるだけ多様に、かつ指定された件数の範囲で列挙してください。
 - 表現は日本語として自然で、指定された文法的な形（連体形・終止形・連用中止形など）を厳密に守ってください。
 - 操作の意味を変えてはいけません。特に、境界値の扱いを変える言い換え（例:「以上」と「より大きい」の混同、「より小さい」と「以下」の混同）は禁止します。
+- 操作を特定するために必要な語（例:「先頭から」「末尾から」「昇順に」「降順に」「1個おきに」）を省略してはいけません。省略すると別の操作と区別がつかなくなります。
+- 同じ表現を2回出力してはいけません。また、件数を満たすためだけに「操作」「処理」「動作」「こと」などを付け足した水増し表現も出力しないでください。自然な言い換えが尽きたら、指定された最小件数で止めて構いません。
 - 変数名（k, xs, N, solve など）がプロンプト中で指定されている場合は、必ずアルファベットの文字列のまま出力に含めてください。日本語の数詞や別の記号に置き換えないでください。
 - 出力は指定されたJSONスキーマに厳密に従ってください。JSON以外の文章（説明、前置き、コードブロックの記法など）は一切出力しないでください。
 - 思考の過程は出力せず、最終的なJSONのみを返してください。"""
@@ -82,8 +80,17 @@ TEMPLATE_ADNOMINAL = """Python関数 solve(xs, k) の中で、リスト xs の�
 
 条件: {description}
 
+出力する表現は、直後に「要素」という名詞が続く連体修飾のフラグメントです。生成器側が「（別の条件の連体修飾）＋（この表現）＋要素だけを残す」のように前後を補って一文にするので、この表現自体には名詞も、絞り込みを表す述語も含めないでください。
+
 制約:
-- 出力は名詞（「要素」「値」など）に直接かかる連体修飾の形（「〜の」「〜い」のように名詞の直前に置ける形）のみとする。文末に置く終止形や、連用中止形は出力しないこと。
+- 末尾は、直後に名詞を置ける形（「〜の」「〜い」「〜な」「〜ない」や動詞の連体形）にすること。良い例:「偶数の」「2で割り切れる」「k以上の」。
+- 末尾を名詞で終えないこと。特に「要素」「もの」「値」「数」「こと」「とき」で終わる表現は出力しないこと。悪い例:「偶数の値」「k以上の要素」「2で割り切れる数」。
+- 名詞で終わる言い方しか思いつかない場合は、その名詞を削るか、末尾に「の」を付けて連体形にすること（「kの倍数」→「kの倍数の」、「2で割り切れる値」→「2で割り切れる」）。
+- 「だけ」「のみ」「を残す」「を抽出する」「を選ぶ」のような、絞り込みそのものを表す語を含めないこと（それは生成器側が付ける）。悪い例:「k以上の要素だけ」「0に等しいものだけを残す」。
+- 断定の「〜である」で終えないこと。別の条件と重ねたときに読みづらくなるので、「〜の」で終える形に直すこと（「k以上である」→「k以上の」、「奇数である」→「奇数の」）。
+- 別の条件の連体修飾が前に付くことがあるため、2つ重ねて「（別の条件）（この表現）要素」と読んでも自然な形にすること（「k以上の」＋「偶数の」→「k以上の偶数の要素」は可）。
+- 「値が」「要素が」のような主語や、「〜こと」のような名詞化を含めないこと。悪い例:「値が偶数である」「偶数であること」。
+- 文末に置く終止形や、連用中止形は出力しないこと。
 - {var_note}
 - 意味を変えないこと（特に境界値の扱いに注意）。
 
@@ -97,8 +104,14 @@ TEMPLATE_ACTION_PAIR = """Python関数 solve(xs, k) の中で、リストの要�
 - terminal: 文末に置く終止形（例: 「kを加える」）
 - te: 直後に別の操作の説明が続く場合に使う、連用中止形（例: 「kを加えて」）
 
+生成器側は、terminalを「…kを加えるsolve関数を実装してください。」のように直後の名詞に係る形で使い、teの後ろには「から」や読点を生成器が補って「kを加えてから2倍する」「kを加えて、昇順に並べる」のように次の節へ繋ぎます。
+
 制約:
+- terminalは動詞で言い切る形にすること。直後に「solve関数」のような名詞が続くので、「操作」「処理」「動作」「方法」「こと」などの名詞で終える表現は、件数が足りなくなっても出力しないこと。悪い例:「kを加える操作」（「kを加える操作solve関数」となり後ろに繋がらない）。
+- teは「〜て」で終わる連用中止形にすること。接続詞「から」は生成器が後ろに付けるので、te自体に「から」を含めてはいけない。「〜から」「〜で」「〜ます」「〜です」で終える形は出力しないこと。悪い例:「kを加えてから」（生成器が付けるので「〜からから」になる）「kを加える処理で」「kを加えます」。
 - 同じ表現のterminalとteは、必ず同じ意味・同じ操作を指す対でなければならない（片方だけ違う言い方に変えない）。
+- teはterminalと必ず異なる連用中止形にすること（「〜する」→「〜して」、「〜させる」→「〜させて」、「〜く」→「〜いて」）。terminalと同じ文字列をteに入れないこと。
+- 操作を特定する語（「先頭から」「末尾から」「昇順に」「降順に」「1個おきに」など）を省略しないこと。省略すると別の操作と区別がつかなくなる。
 - {var_note}
 - 意味を変えないこと。
 
@@ -112,8 +125,12 @@ TEMPLATE_FILTER_VERB = """Python関数 solve(xs, k) の問題文で、抽出条�
 
 制約:
 - プレースホルダ {{frag}} の文字列自体は改変・省略しないこと。
-- {{frag}} の直後は名詞的にもとの条件を受ける形にする（{{frag}}には「k以上の偶数の」のような連体形の文字列が入る前提）。
+- 表現は必ず {{frag}} という文字列で始めること。{{frag}} より前には1文字も書かないこと。条件そのものは生成器が {{frag}} の位置に差し込むので、「k以上の」「偶数の」のような具体的な条件を表現に含めてはいけない。悪い例:「k以上の{{frag}}要素だけを残す」（条件が二重になる）。
+- {{frag}} の直後には「要素」「もの」「値」のような名詞を置き、もとの条件を名詞的に受ける形にする（{{frag}}には「k以上の偶数の」のような連体形の文字列が入る前提）。
 - 「残す／抽出する／選ぶ」のように、要素を絞り込むという意味を保つこと。
+- terminalは、直後に「solve関数」のような名詞が続く（「…要素だけを残すsolve関数を実装してください。」）ため、動詞で言い切る形にすること。名詞で終える表現は出力しないこと。
+- teは、直後に読点「、」と次の操作の説明が続く（「…要素だけを残し、kを加える」）ため、そこで文が切れない連用中止形にすること。
+- teはterminalと必ず異なる連用中止形にすること（「〜する」→「〜し」、「〜む」→「〜み」）。terminalと同じ文字列をteに入れないこと。
 
 出力はJSONスキーマに従うこと。"""
 
@@ -122,6 +139,7 @@ TEMPLATE_TEXT = """Python関数 solve(xs, k) を実装させるための、日�
 {role_description}
 
 制約:
+- {ending_note}
 - {var_note}
 - {boundary_note}
 
@@ -160,7 +178,8 @@ def string_list_schema(min_items: int, max_items: int) -> dict:
     }
 
 
-def action_pair_schema(min_items: int, max_items: int) -> dict:
+def action_pair_schema(min_items: int, max_items: int, pattern: Optional[str] = None) -> dict:
+    form = {"type": "string"} if pattern is None else {"type": "string", "pattern": pattern}
     return {
         "type": "object",
         "properties": {
@@ -169,8 +188,8 @@ def action_pair_schema(min_items: int, max_items: int) -> dict:
                 "items": {
                     "type": "object",
                     "properties": {
-                        "terminal": {"type": "string"},
-                        "te": {"type": "string"},
+                        "terminal": dict(form),
+                        "te": dict(form),
                     },
                     "required": ["terminal", "te"],
                     "additionalProperties": False,
@@ -182,6 +201,17 @@ def action_pair_schema(min_items: int, max_items: int) -> dict:
         "required": ["expressions"],
         "additionalProperties": False,
     }
+
+
+# frame:filter_verb only. The frame contributes the verb and ja_generator.py
+# substitutes the condition for the placeholder, so anything the model writes
+# in front of {frag} becomes a second condition in front of the real one
+# (「k以上の{frag}要素だけを残す」 -> 「k以上のk以上の偶数の要素だけを残す」).
+# Asking for that in prose did not hold -- the model copies the condition out
+# of the template's own example -- so the structured-output grammar enforces
+# it instead: start with the placeholder, then at least one more character,
+# and no other braces anywhere.
+FRAG_PREFIX_PATTERN = r"^\{frag\}[^{}]+$"
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +245,7 @@ class PrimitiveSpec:
     var_note: str = ""
     role: str = ""
     role_description: str = ""
+    ending_note: str = ""
     boundary_note: str = ""
 
     def count(self) -> str:
@@ -226,11 +257,20 @@ class PrimitiveSpec:
         """Every value substituted into the template, for the generation log
         (the prompt hash is reproducible from template id + these values)."""
         values = {"count": self.count()}
-        for name in ("description", "var_note", "role", "role_description", "boundary_note"):
+        for name in ("description", "var_note", "role", "role_description", "ending_note", "boundary_note"):
             value = getattr(self, name)
             if value:
                 values[name] = value
         return values
+
+
+# 生成件数目安. Kept well inside what the model can actually produce without
+# repeating itself: a first run at 10〜30 padded the arrays with duplicates
+# and degenerate growth ("...ものであるものである"), because the schema's
+# minItems forces the model to keep emitting after it has run out of
+# genuine paraphrases.
+MIN_ITEMS = 5
+MAX_ITEMS = 15
 
 
 def _filter_spec(op: str, description: str, var_note: str) -> PrimitiveSpec:
@@ -238,8 +278,8 @@ def _filter_spec(op: str, description: str, var_note: str) -> PrimitiveSpec:
         key=f"filter:{op}",
         slot_type=ADNOMINAL,
         template_id="a",
-        min_items=10,
-        max_items=30,
+        min_items=MIN_ITEMS,
+        max_items=MAX_ITEMS,
         description=description,
         var_note=var_note,
     )
@@ -250,8 +290,8 @@ def _action_spec(key: str, description: str, var_note: str) -> PrimitiveSpec:
         key=key,
         slot_type=ACTION_PAIR,
         template_id="b",
-        min_items=10,
-        max_items=30,
+        min_items=MIN_ITEMS,
+        max_items=MAX_ITEMS,
         description=description,
         var_note=var_note,
     )
@@ -259,16 +299,16 @@ def _action_spec(key: str, description: str, var_note: str) -> PrimitiveSpec:
 
 _SPECS: tuple[PrimitiveSpec, ...] = (
     # --- filter: ADNOMINAL x10, template (a) -------------------------------
-    _filter_spec("even", "値が2で割り切れる（2で割った余りが0になる）こと", NO_VAR_NOTE),
-    _filter_spec("odd", "値を2で割った余りが0でないこと", NO_VAR_NOTE),
-    _filter_spec("gt_k", "値が変数kより真に大きいこと（k自身は含まない）", K_NOTE),
-    _filter_spec("ge_k", "値が変数k以上であること（k自身を含む）", K_NOTE),
-    _filter_spec("lt_k", "値が変数kより真に小さいこと（k自身は含まない）", K_NOTE),
-    _filter_spec("le_k", "値が変数k以下であること（k自身を含む）", K_NOTE),
-    _filter_spec("multiple_of_k", "値が変数kで割り切れる（kの倍数である）こと", K_NOTE),
-    _filter_spec("positive", "値が0より真に大きいこと（正の数。0自体は含まない）", NO_VAR_NOTE),
-    _filter_spec("negative", "値が0より真に小さいこと（負の数。0自体は含まない）", NO_VAR_NOTE),
-    _filter_spec("zero", "値がちょうど0であること", NO_VAR_NOTE),
+    _filter_spec("even", "2で割り切れる（2で割った余りが0になる）こと", NO_VAR_NOTE),
+    _filter_spec("odd", "2で割った余りが0でないこと（奇数である）", NO_VAR_NOTE),
+    _filter_spec("gt_k", "変数kより真に大きいこと（k自身は含まない）", K_NOTE),
+    _filter_spec("ge_k", "変数k以上であること（k自身を含む）", K_NOTE),
+    _filter_spec("lt_k", "変数kより真に小さいこと（k自身は含まない）", K_NOTE),
+    _filter_spec("le_k", "変数k以下であること（k自身を含む）", K_NOTE),
+    _filter_spec("multiple_of_k", "変数kで割り切れること（kの倍数である）", K_NOTE),
+    _filter_spec("positive", "0より真に大きいこと（正である。0自体は含まない）", NO_VAR_NOTE),
+    _filter_spec("negative", "0より真に小さいこと（負である。0自体は含まない）", NO_VAR_NOTE),
+    _filter_spec("zero", "ちょうど0であること（0に等しい）", NO_VAR_NOTE),
     # --- map: ACTION_PAIR x7, template (b) ---------------------------------
     _action_spec("map:add_k", "各要素に変数kを足す（加算する）", K_NOTE),
     _action_spec(
@@ -284,19 +324,19 @@ _SPECS: tuple[PrimitiveSpec, ...] = (
     _action_spec("map:square", "各要素を2乗する", NO_VAR_NOTE),
     _action_spec("map:mul_const", "各要素を定数N倍する", N_NOTE),
     # --- order: ACTION_PAIR x3, template (b) -------------------------------
-    _action_spec("order:ascending", "リスト全体を、小さい順（昇順）に並べ替える", NO_VAR_NOTE),
-    _action_spec("order:descending", "リスト全体を、大きい順（降順）に並べ替える", NO_VAR_NOTE),
+    _action_spec("order:ascending", "リスト全体を、小さい順（昇順）に並べ替える（「昇順」「小さい順」にあたる語を必ず表現に含めること）", NO_VAR_NOTE),
+    _action_spec("order:descending", "リスト全体を、大きい順（降順）に並べ替える（「降順」「大きい順」にあたる語を必ず表現に含めること）", NO_VAR_NOTE),
     _action_spec(
         "order:reverse",
-        "現在の並び順の大小関係に関わらず、要素の並びをそのまま逆転させる（ソートではない）",
+        "現在の並び順の大小関係に関わらず、要素の並びをそのまま逆転させる（ソートではない。「逆」「反転」にあたる語を必ず表現に含めること）",
         NO_VAR_NOTE,
     ),
     # --- slice: ACTION_PAIR x3, template (b) -------------------------------
-    _action_spec("slice:take_first_k", "リストの先頭から変数k個の要素を取り出す", K_NOTE),
-    _action_spec("slice:take_last_k", "リストの末尾から変数k個の要素を取り出す", K_NOTE),
+    _action_spec("slice:take_first_k", "リストの先頭から変数k個の要素を取り出す（「先頭」にあたる語と「k個」を必ず表現に含めること。これを落とすと末尾から取る操作と区別がつかない）", K_NOTE),
+    _action_spec("slice:take_last_k", "リストの末尾から変数k個の要素を取り出す（「末尾」にあたる語と「k個」を必ず表現に含めること。これを落とすと先頭から取る操作と区別がつかない）", K_NOTE),
     _action_spec(
         "slice:step_2",
-        "リストの先頭（0番目）の要素から1個おきに要素を取り出す（0, 2, 4, ...番目の要素を残す）",
+        "リストの先頭（0番目）の要素から1個おきに要素を取り出す（0, 2, 4, ...番目の要素を残す。「1個おき」にあたる語を必ず表現に含めること）",
         NO_VAR_NOTE,
     ),
     # --- frames ------------------------------------------------------------
@@ -306,37 +346,67 @@ _SPECS: tuple[PrimitiveSpec, ...] = (
         key="frame:filter_verb",
         slot_type=ACTION_PAIR,
         template_id="c",
-        min_items=5,
-        max_items=10,
+        min_items=4,
+        max_items=8,
     ),
     PrimitiveSpec(
         key="frame:opening",
         slot_type=TEXT,
         template_id="d",
-        min_items=10,
-        max_items=30,
+        min_items=MIN_ITEMS,
+        max_items=MAX_ITEMS,
         role="書き出し",
         role_description=(
-            "整数のリストxsを読み手に導入する一文（の前半）。直後に抽出条件などの節"
-            "（例:「偶数の要素だけを残し、」）が続くことを前提に、読点「、」で終える自然な接続にすること。"
+            "整数のリストxsを読み手に導入する一文（の前半）。直後にどの操作の節が続くかは決まっておらず、"
+            "抽出（「偶数の要素だけを残し、」）・変換（「kを加えて、」）・並べ替え（「昇順に並べて、」）・"
+            "切り出し（「先頭からk個を取り出して、」）のどれが続いても成り立つ必要がある。"
+            "読点「、」で終える自然な接続にすること。"
+            "例:「整数のリストxsについて、」「xsという整数のリストに対して、」"
+        ),
+        ending_note=(
+            "必ず読点「、」で終えること。句点「。」で終わる、それだけで完結した文にはしないこと"
         ),
         var_note=XS_NOTE,
-        boundary_note="文中に条件・操作を表す語を含めないこと（書き出しは入力の導入のみを行う）",
+        boundary_note=(
+            "後続の節がどの操作であっても成り立つ、中立な書き出しに限ること。"
+            "特定の操作を前提とする言い方は出力しないこと"
+            "（例:「整数リストxsから、」は「〜から取り出す」という抽出を前提にしてしまうため、"
+            "変換や並べ替えが続くと繋がらない）。"
+            "条件・操作を表す語を文中に含めないこと（書き出しは入力の導入のみを行う）"
+        ),
     ),
     PrimitiveSpec(
         key="frame:closing",
         slot_type=TEXT,
         template_id="d",
-        min_items=10,
-        max_items=30,
+        min_items=MIN_ITEMS,
+        max_items=MAX_ITEMS,
         role="結び",
         role_description=(
-            "直前に置かれる動詞の連体形（例:「昇順に並べる」）を受けて、solve関数の実装を依頼する"
-            "一文の後半としてまとめる言い方。句点「。」で終えること。"
+            "直前に置かれる動詞の連体形（例:「昇順に並べる」）を受けて、solve関数を"
+            "**これから書くよう依頼する**一文の後半としてまとめる言い方。"
+            "必ず「solve」を含む名詞句（例:「solve関数」「Python関数solve」）から始め、"
+            "その名詞句が直前の連体形に係るようにすること。"
+            "solveはまだ存在しない関数なので、動詞は「書く」「実装する」「定義する」「作成する」"
+            "といった作成を表すものに限る。"
+            "例:「solve関数を書いてください。」「Python関数solveを実装してください。」"
+        ),
+        ending_note=(
+            "必ず「〜してください。」のような依頼の形にし、句点「。」で終えること。"
+            "「solve関数を実装する」のように終止形で言い切る形は出力しないこと。"
+            "読み手に直接お願いする一文にすること。"
+            "悪い例:「solve関数を実行するよう依頼してください。」"
+            "「solve関数を処理するよう求めしてください。」"
+            "「solve関数を実行するよう請けましょう。」"
+            "（第三者への依頼になっている・敬語が崩れている）"
         ),
         var_note=SOLVE_NOTE,
         boundary_note=(
-            "直前の動詞の連体形に自然に接続する形にし、それ自体で条件や操作の内容を新たに追加しないこと"
+            "直前の動詞の連体形に自然に接続する形にし、それ自体で条件や操作の内容を新たに追加しないこと。"
+            "依頼するのは関数を「書く・実装する・定義する・作成する」ことに限る。"
+            "solveはこれから書かせる関数であって動かす対象ではないので、"
+            "「実行する」「呼び出す」「処理する」「動作させる」「実施する」を使った依頼は、"
+            "件数が足りなくなっても出力しないこと"
         ),
     ),
 )
@@ -371,7 +441,8 @@ def json_schema(spec: PrimitiveSpec) -> dict:
     ADNOMINAL/TEXT, ``{terminal, te}`` pairs for ACTION_PAIR (THIRD_PARTY.md
     "### 出力JSONスキーマ")."""
     if spec.slot_type == ACTION_PAIR:
-        return action_pair_schema(spec.min_items, spec.max_items)
+        pattern = FRAG_PREFIX_PATTERN if spec.key == "frame:filter_verb" else None
+        return action_pair_schema(spec.min_items, spec.max_items, pattern)
     return string_list_schema(spec.min_items, spec.max_items)
 
 
@@ -429,7 +500,7 @@ def all_prompts() -> list[tuple[PrimitiveSpec, list[dict[str, str]]]]:
 
 
 def _main(argv: Optional[list[str]] = None) -> None:
-    """``python semantic_ast/ja_prompts.py [key]`` prints prompts for eyeballing."""
+    """``python semantic_ast/expressions_ja/ja_prompts.py [key]`` prints prompts for eyeballing."""
     import sys
 
     args = sys.argv[1:] if argv is None else argv

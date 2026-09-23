@@ -11,3 +11,6 @@ wheels/
 
 # Generated dataset output (see semantic_ast/demo.py)
 semantic_ast/out/
+
+# Dry-run generation log (see semantic_ast/expressions_ja/ja_teacher.py --dry-run)
+semantic_ast/expressions_ja/*.dry-run.jsonl

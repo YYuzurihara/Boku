@@ -12,10 +12,20 @@ import sys
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+_SEMANTIC_AST = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_SEMANTIC_AST))
+sys.path.insert(0, str(_SEMANTIC_AST / "expressions_ja"))
 
 from ja_prompts import PRIMITIVES  # noqa: E402
-from ja_teacher import SamplingConfig, _specs_for, parse_response  # noqa: E402
+from ja_teacher import SamplingConfig, _specs_for, parse_response, salvage_expressions  # noqa: E402
+
+# A response cut off mid-item, as produced when the model tries to stop
+# early and the structured-output grammar terminates the request.
+TRUNCATED = """{
+  "expressions": [
+    {"terminal": "符号を反転する", "te": "符号を反転して"},
+    {"terminal": "正負を入れ替える", "te": "正負を入れ替えて"},
+    {"terminal": "正負の向きを逆にする", "te": "正]]}"""
 
 
 class ParseResponse(unittest.TestCase):
@@ -52,6 +62,43 @@ class ParseResponse(unittest.TestCase):
         # human reviewer's job
         payload = {"expressions": ["", "  ", "kより大きい"]}
         expressions, error = parse_response(PRIMITIVES["filter:ge_k"], json.dumps(payload, ensure_ascii=False))
+        self.assertIsNone(error)
+        self.assertEqual(expressions, payload["expressions"])
+
+
+class Salvage(unittest.TestCase):
+    """A truncated response must not cost us the expressions that did arrive."""
+
+    def test_complete_items_are_recovered_from_a_truncated_response(self):
+        expressions, error = parse_response(PRIMITIVES["map:negate"], TRUNCATED)
+        self.assertEqual(
+            expressions,
+            [
+                {"terminal": "符号を反転する", "te": "符号を反転して"},
+                {"terminal": "正負を入れ替える", "te": "正負を入れ替えて"},
+            ],
+        )
+        self.assertIn("salvaged 2", error)
+
+    def test_the_half_written_item_is_not_repaired(self):
+        # stop at the break; never invent the missing half
+        for item in salvage_expressions(TRUNCATED):
+            self.assertEqual(sorted(item), ["te", "terminal"])
+            self.assertTrue(item["te"].endswith("て"), item)
+
+    def test_string_lists_are_salvaged_too(self):
+        text = '{"expressions": ["偶数の", "2で割り切れる", "2の倍'
+        self.assertEqual(salvage_expressions(text), ["偶数の", "2で割り切れる"])
+
+    def test_nothing_salvageable_still_reports_the_error(self):
+        expressions, error = parse_response(PRIMITIVES["filter:even"], '{"expressions": [')
+        self.assertEqual(expressions, [])
+        self.assertIn("not valid JSON", error)
+        self.assertNotIn("salvaged", error)
+
+    def test_valid_responses_are_untouched(self):
+        payload = {"expressions": ["偶数の", "2で割り切れる"]}
+        expressions, error = parse_response(PRIMITIVES["filter:even"], json.dumps(payload, ensure_ascii=False))
         self.assertIsNone(error)
         self.assertEqual(expressions, payload["expressions"])
 

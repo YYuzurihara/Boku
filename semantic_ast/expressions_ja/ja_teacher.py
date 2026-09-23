@@ -14,9 +14,9 @@ outputs rather than by asking nicely and parsing prose.
 
 Two files come out of a run:
 
-* ``expressions/candidates.json`` -- the expression dictionary itself
+* ``candidates.json`` -- the expression dictionary itself
   (ja_dictionary.py's format), ready for the human approval step.
-* ``expressions/generation_log.jsonl`` -- one record per primitive holding
+* ``generation_log.jsonl`` -- one record per primitive holding
   every field homework.md requires to be recorded (model name / revision /
   quantization / inference library + version / system prompt / sampling
   settings / seed / timestamp / prompt hash), plus the raw model output, so
@@ -25,12 +25,16 @@ Two files come out of a run:
 
 The raw output is logged before parsing and the dictionary is written even
 when some entries come back malformed: this stage records what the model
-said, it does not judge or repair it (that is the human reviewer's job).
+said, it does not judge or repair it (that is the human reviewer's job). It
+does *report*, though: a run ends by listing the entries ja_generator.py
+cannot join into a grammatical sentence, which is the shortlist the human
+approval step starts from.
 
 Usage:
-    python semantic_ast/ja_teacher.py                  # every primitive
-    python semantic_ast/ja_teacher.py --keys filter:ge_k map:add_k
-    python semantic_ast/ja_teacher.py --dry-run        # prompts + log only, no GPU
+    python semantic_ast/expressions_ja/ja_teacher.py                  # every primitive
+    python semantic_ast/expressions_ja/ja_teacher.py --keys filter:ge_k map:add_k
+    python semantic_ast/expressions_ja/ja_teacher.py --dry-run        # prompts + log only, no GPU
+    python semantic_ast/expressions_ja/ja_teacher.py --report-contract  # check an existing dictionary
 """
 
 from __future__ import annotations
@@ -39,12 +43,19 @@ import argparse
 import json
 import os
 import sys
+from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from ja_dictionary import CANDIDATES_PATH, DEFAULT_DIR, ExpressionDictionary, merge
+from ja_dictionary import (
+    CANDIDATES_PATH,
+    DEFAULT_DIR,
+    ExpressionDictionary,
+    ExpressionDictionaryError,
+    merge,
+)
 from ja_prompts import PRIMITIVES, SYSTEM_PROMPT, PrimitiveSpec, build_messages, json_schema, prompt_record
 
 MODEL = "Qwen/Qwen3-4B-AWQ"
@@ -57,7 +68,10 @@ LOG_PATH = DEFAULT_DIR / "generation_log.jsonl"
 DEFAULT_TEMPERATURE = 0.8
 DEFAULT_TOP_P = 0.95
 DEFAULT_SEED = 0
-DEFAULT_MAX_TOKENS = 2048
+# A first run at 2048 hit the cap mid-array on the longest responses; the
+# grammar then closed the JSON on a half-written string, leaving garbage
+# like "kより真に_mime" as the last expression. Headroom is cheap here.
+DEFAULT_MAX_TOKENS = 3072
 DEFAULT_MAX_MODEL_LEN = 4096
 DEFAULT_GPU_MEMORY_UTILIZATION = 0.85
 
@@ -129,16 +143,59 @@ def run_metadata(model: str, sampling: SamplingConfig, dry_run: bool) -> dict:
     }
 
 
+def salvage_expressions(text: str) -> list:
+    """Recover the complete items of a truncated ``expressions`` array.
+
+    A response can be cut off mid-item. Observed once with this model: the
+    model emitted ``<|endoftext|>`` (151643) while still *inside* a JSON
+    string, the structured-output grammar could not accept it there, and
+    vLLM terminated the request ("Unexpected: grammar rejected tokens ...",
+    v1/core/sched/scheduler.py) -- vLLM calls this unexpected because its
+    own logit bitmask should have made that token unselectable. Whatever the
+    cause, everything before the break is still a well-formed expression the
+    model actually produced, so it would be wasteful to throw away (say) ten
+    good pairs because an eleventh was cut in half.
+
+    This only *reads* items that are already complete and stops at the first
+    one that is not -- nothing is repaired, completed, or invented.
+    """
+    start = text.find('"expressions"')
+    if start == -1:
+        return []
+    start = text.find("[", start)
+    if start == -1:
+        return []
+
+    decoder = json.JSONDecoder()
+    items: list = []
+    i = start + 1
+    while i < len(text):
+        while i < len(text) and text[i] in " \t\r\n,":
+            i += 1
+        if i >= len(text) or text[i] == "]":
+            break
+        try:
+            item, i = decoder.raw_decode(text, i)
+        except json.JSONDecodeError:
+            break  # the truncated item: stop here
+        items.append(item)
+    return items
+
+
 def parse_response(spec: PrimitiveSpec, text: str) -> tuple[list, Optional[str]]:
     """Pull the ``expressions`` array out of one model response.
 
-    Returns ``(expressions, error)``; on any problem the expressions list is
-    empty and ``error`` describes what was wrong, for the log. The raw text
-    is saved by the caller either way.
+    Returns ``(expressions, error)``. ``error`` is ``None`` only for a fully
+    valid response; a truncated one still returns whatever complete items
+    could be salvaged, with ``error`` saying so. The raw text is saved by the
+    caller either way.
     """
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:
+        salvaged = salvage_expressions(text)
+        if salvaged:
+            return salvaged, f"response is not valid JSON ({exc}); salvaged {len(salvaged)} complete item(s)"
         return [], f"response is not valid JSON: {exc}"
     if not isinstance(payload, dict) or "expressions" not in payload:
         return [], "response JSON has no 'expressions' key"
@@ -146,6 +203,34 @@ def parse_response(spec: PrimitiveSpec, text: str) -> tuple[list, Optional[str]]
     if not isinstance(expressions, list):
         return [], f"'expressions' is {type(expressions).__name__}, expected list"
     return expressions, None
+
+
+def report_contract_problems(dictionary: ExpressionDictionary, limit: int = 20) -> int:
+    """Print the entries ja_generator.py could not join into a grammatical
+    sentence, grouped by key.
+
+    Printed, never dropped: this is the shortlist for the human approval step
+    ("人間による表現チェック"), which is where an entry actually gets removed
+    or rewritten. Import is local so ``--dry-run`` and the prompt-only paths
+    never pay for loading the renderer.
+    """
+    from ja_generator import contract_problems
+
+    problems = contract_problems(dictionary)
+    if not problems:
+        print("\nevery expression composes: no combination-contract problems")
+        return 0
+    by_key = Counter(problem.split("[", 1)[0] for problem in problems)
+    print(
+        f"\n{len(problems)} combination-contract problem(s) in {len(by_key)} key(s) -- "
+        f"expressions the generator cannot join into grammatical Japanese "
+        f"(candidates for the human approval step to drop or fix):"
+    )
+    for problem in problems[:limit]:
+        print(f"  - {problem}")
+    if len(problems) > limit:
+        print(f"  ... and {len(problems) - limit} more: {', '.join(f'{k} x{n}' for k, n in by_key.most_common())}")
+    return len(problems)
 
 
 def _specs_for(keys: Optional[list[str]]) -> list[PrimitiveSpec]:
@@ -223,7 +308,22 @@ def main(argv: Optional[list[str]] = None) -> int:
         action="store_true",
         help="merge into the existing dictionary at --out instead of replacing it",
     )
+    parser.add_argument(
+        "--report-contract",
+        action="store_true",
+        help="only check the existing dictionary at --out against the generator's combination contract",
+    )
     args = parser.parse_args(argv)
+
+    if args.report_contract:
+        try:
+            dictionary = ExpressionDictionary.load(args.out, strict=False)
+        except ExpressionDictionaryError as exc:
+            print(exc, file=sys.stderr)
+            return 1
+        print(f"{args.out}: {len(dictionary)} keys, {sum(dictionary.counts().values())} expressions")
+        report_contract_problems(dictionary, limit=10**9)
+        return 0
 
     if not args.flashinfer_sampler:
         os.environ.setdefault(FLASHINFER_SAMPLER_ENV, "0")
@@ -263,16 +363,22 @@ def main(argv: Optional[list[str]] = None) -> int:
         status = error or f"{len(expressions)} expressions"
         print(f"  {spec.key:<24} {status}")
 
-    args.log.parent.mkdir(parents=True, exist_ok=True)
-    with args.log.open("w", encoding="utf-8") as f:
+    # A dry run holds no model output, so its records would replace the record
+    # of a real run with nothing -- the same reason it leaves the dictionary
+    # alone below. It writes beside the real log instead of into it.
+    log_path = args.log.with_suffix(".dry-run.jsonl") if args.dry_run else args.log
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    # --merge tops up an existing dictionary, so its log records have to be
+    # added to the existing log rather than replacing the other keys' records
+    with log_path.open("a" if args.merge else "w", encoding="utf-8") as f:
         for record in records:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
-    print(f"generation log -> {args.log}")
+    print(f"generation log -> {log_path}")
 
     if args.dry_run:
         # every entry would be empty; writing them would wipe a real
         # dictionary sitting at --out
-        print(f"dry run: expression dictionary at {args.out} left untouched")
+        print(f"dry run: expression dictionary at {args.out} and generation log at {args.log} left untouched")
         return 0
 
     dictionary = ExpressionDictionary.from_expressions(expressions_by_key)
@@ -289,6 +395,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     duplicates = dictionary.duplicate_report()
     if duplicates:
         print(f"\nduplicate expressions in {len(duplicates)} key(s): {', '.join(duplicates)}")
+    report_contract_problems(dictionary)
     return 0
 
 
