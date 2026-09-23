@@ -48,7 +48,7 @@ def main() -> None:
 
     OUT_DIR.mkdir(exist_ok=True)
     for split_name, group in capped.items():
-        path = OUT_DIR / f"{split_name}.jsonl"
+        path = OUT_DIR / f"ast_{split_name}.jsonl"
         with path.open("w", encoding="utf-8") as f:
             for i, ast in enumerate(group):
                 record = {
