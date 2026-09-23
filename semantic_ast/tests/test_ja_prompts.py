@@ -172,7 +172,7 @@ class Rendering(unittest.TestCase):
     def test_frame_prompts_pin_down_their_final_character(self):
         self.assertIn("必ず読点「、」で終えること", render_user_prompt(PRIMITIVES["frame:opening"]))
         closing = render_user_prompt(PRIMITIVES["frame:closing"])
-        self.assertIn("「〜してください。」", closing)
+        self.assertIn("「〜てください。」", closing)
         self.assertIn("終止形で言い切る形は出力しないこと", closing)
 
     def test_opening_prompt_demands_a_category_neutral_opening(self):
@@ -190,15 +190,40 @@ class Rendering(unittest.TestCase):
         # it modifies, so the closing starts with the solve noun phrase
         prompt = render_user_prompt(PRIMITIVES["frame:closing"])
         self.assertIn("「solve」を含む名詞句", prompt)
-        self.assertIn("直前の連体形に係る", prompt)
+        self.assertIn("その連体形が係る名詞句", prompt)
 
     def test_closing_prompt_asks_for_an_implementation_request(self):
-        # a first run returned "solve関数を実行してください。" (run the
-        # function, not write it) and "solve関数を実行するよう求めしてください。"
+        # a first run returned "solve関数を実行してください。" -- run the
+        # function, not write it; the verb has to be a writing one
         prompt = render_user_prompt(PRIMITIVES["frame:closing"])
-        self.assertIn("「書く・実装する・定義する・作成する」", prompt)
+        self.assertIn("まだ存在しないコードを新しく生み出す意味のものに限ること", prompt)
         self.assertIn("「実行する」「呼び出す」「処理する」", prompt)
-        self.assertIn("敬語が崩れている", prompt)
+
+    def test_closing_prompt_forbids_the_relayed_request(self):
+        # a run returned "solve関数を書くよう依頼してください。" /
+        # "...するようお願いしてください。" -- an order to relay the request
+        # to a third party, which the reader cannot answer with code. The
+        # model was copying 依頼/お願い out of the prompt's own 悪い例, so the
+        # prompt no longer writes a bad example at all: it states the shape
+        # (one verb, addressed to the reader) instead.
+        prompt = render_user_prompt(PRIMITIVES["frame:closing"])
+        self.assertIn("読み手自身にその動作をさせる文", prompt)
+        self.assertIn("「〜よう」「〜ように」を挟んで別の動詞に繋ぐ形", prompt)
+        self.assertIn("助詞「を」を2回以上使わないこと", prompt)
+        for word in ("依頼", "お願い", "求め"):
+            self.assertNotIn(word, prompt, word)
+
+    def test_closing_prompt_shows_exactly_one_example_sentence(self):
+        # dropping every example made a 4B model fall back to whatever
+        # concrete words were nearby -- the template's own "solve(xs, k)"
+        # ("solve関数は、xsリストをkに応じて処理してください。") and, once the
+        # banned verbs were the only ones written down, those
+        # ("solve関数をを実行してください。"). One well-formed example anchors
+        # the shape; a second one for the bad case is what started the
+        # 依頼 copying, so there is none.
+        prompt = render_user_prompt(PRIMITIVES["frame:closing"])
+        self.assertIn("全体の形の例:「Python関数solveを実装してください。」", prompt)
+        self.assertNotIn("悪い例", prompt)
 
     def test_messages_are_system_plus_user(self):
         messages = build_messages(PRIMITIVES["filter:even"])
