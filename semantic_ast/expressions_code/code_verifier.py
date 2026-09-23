@@ -7,6 +7,7 @@ programs, 「両者の出力をランダムテストで比較する。これに�
 
 What it checks, per snippet:
 
+    length_ok    within the line-count / line-length caps (code_verifier, below)
     syntax_ok    ast.parse succeeds                      (sandbox/ast_safety)
     ast_safe     only the allowlisted syntax/builtins     (sandbox/ast_safety)
     executable   solve() loads in a restricted namespace  (sandbox/runner)
@@ -54,6 +55,32 @@ from testcases import TestCase, generate_test_cases  # noqa: E402
 PER_TEST_TIMEOUT_SEC = 2.0
 MAX_REPORTED_FAILURES = 3
 
+# homework.md's 「長さ上限を超えない」. Two independent heuristics -- total
+# line count and the longest single line -- so both a wall of short lines and
+# one enormous one-liner are caught. The generator's own catalogue currently
+# tops out at 12 lines / 88 chars (every style, over the full DSL space), so
+# these leave generous headroom for legitimate renderings while still
+# rejecting a runaway one (or, at evaluation time, a student model that
+# rambles instead of emitting `<|eos|>`).
+MAX_CODE_LINES = 40
+MAX_LINE_CHARS = 200
+
+
+def check_length(
+    code: str,
+    max_lines: int = MAX_CODE_LINES,
+    max_line_chars: int = MAX_LINE_CHARS,
+) -> Optional[str]:
+    """``None`` when ``code`` is within the line-count/line-length caps,
+    otherwise a human-readable reason it is not."""
+    lines = code.splitlines()
+    if len(lines) > max_lines:
+        return f"too many lines: {len(lines)} > {max_lines}"
+    longest = max((len(line) for line in lines), default=0)
+    if longest > max_line_chars:
+        return f"line too long: {longest} chars > {max_line_chars}"
+    return None
+
 
 def verify(
     code: str,
@@ -71,6 +98,7 @@ def verify(
     whole corpus and wants the report.
     """
     result: dict[str, Any] = {
+        "length_ok": False,
         "syntax_ok": False,
         "ast_safe": False,
         "executable": False,
@@ -78,6 +106,12 @@ def verify(
         "pure": None,
         "error": None,
     }
+
+    length_error = check_length(code)
+    if length_error is not None:
+        result["error"] = f"length limit exceeded: {length_error}"
+        return result
+    result["length_ok"] = True
 
     try:
         tree = ast_safety.check_syntax(code)
@@ -135,7 +169,8 @@ def ok(verification: dict) -> bool:
     """Whether a verification record clears every bar (homework.md: 「参照イン
     タプリタと同じ結果になる場合だけ採用する」)."""
     return bool(
-        verification["syntax_ok"]
+        verification["length_ok"]
+        and verification["syntax_ok"]
         and verification["ast_safe"]
         and verification["executable"]
         and verification["tests_passed"]

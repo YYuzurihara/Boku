@@ -32,7 +32,7 @@ from code_generator import (  # noqa: E402
     variants,
 )
 from code_styles import STYLES, STYLES_BY_NAME, styles_for  # noqa: E402
-from code_verifier import cross_check, ok, verify, verify_variant  # noqa: E402
+from code_verifier import MAX_CODE_LINES, MAX_LINE_CHARS, check_length, cross_check, ok, verify, verify_variant  # noqa: E402
 from generator import enumerate_all  # noqa: E402
 from reference_interpreter import interpret  # noqa: E402
 from schema import SemanticAST  # noqa: E402
@@ -152,6 +152,37 @@ class PrecedenceTest(unittest.TestCase):
                     interpret(semantic_ast, xs, k),
                     f"{semantic_ast.to_dict()} on xs={xs} k={k}\n{code}",
                 )
+
+
+class LengthCheckTest(unittest.TestCase):
+    """homework.md's 「長さ上限を超えない」."""
+
+    def test_every_generated_variant_is_within_limits(self):
+        for semantic_ast in sample_asts(60):
+            for variant in variants(semantic_ast):
+                self.assertIsNone(check_length(variant.code), variant.code)
+
+    def test_too_many_lines_is_rejected(self):
+        code = "def solve(xs, k):\n" + "    pass\n" * MAX_CODE_LINES
+        reason = check_length(code)
+        self.assertIsNotNone(reason)
+        self.assertIn("too many lines", reason)
+
+    def test_line_too_long_is_rejected(self):
+        code = f"def solve(xs, k):\n    return [{'x, ' * MAX_LINE_CHARS}]\n"
+        reason = check_length(code)
+        self.assertIsNotNone(reason)
+        self.assertIn("line too long", reason)
+
+    def test_verify_reports_length_ok_and_short_circuits_on_failure(self):
+        too_long = "def solve(xs, k):\n" + "    pass\n" * (MAX_CODE_LINES + 1)
+        verification = verify(too_long, [])
+        self.assertFalse(verification["length_ok"])
+        self.assertFalse(verification["syntax_ok"])  # never reached
+        self.assertIn("length limit exceeded", verification["error"])
+
+        ok_code = "def solve(xs, k):\n    return xs\n"
+        self.assertTrue(verify(ok_code, [])["length_ok"])
 
 
 class VerificationTest(unittest.TestCase):

@@ -25,7 +25,8 @@ sandbox/
   client.py       ホスト側ドライバ（docker runの安全な起動・タイムアウト管理）
   demo.py         動作確認用デモ（正解例・脱獄試行・タイムアウト・メモリ爆弾）
   tests/
-    test_ast_safety.py   ast_safety.py の単体テスト（Docker不要）
+    test_ast_safety.py       ast_safety.py の単体テスト（Docker不要）
+    test_sandbox_container.py  demo.py のケースを実コンテナ経由でassertするテスト（Docker必須）
 ```
 
 ## 多層防御アーキテクチャ
@@ -110,11 +111,13 @@ python sandbox/demo.py
 
 正解例・不正解例・`import os` 脱獄試行・`__class__` 脱獄試行・無限ループ（タイムアウト）・メモリ爆弾・非純粋関数（入力破壊）の7ケースを実行し、それぞれの判定結果を表示する。
 
-### 4. 単体テスト（Docker不要）
+### 4. 単体テスト
 
 ```bash
 python -m unittest discover -s sandbox/tests -v
 ```
+
+`test_ast_safety.py` はDocker不要（`ast_safety.py`の静的チェックのみ）。`test_sandbox_container.py` は上記デモの7ケースを実コンテナ（`boku-sandbox`イメージ、`setUpClass`で自動ビルド）に通してassertする版で、タイムアウト・メモリ上限・脱獄拒否・純粋性判定が実際のコンテナ内で機能することを検証する。Dockerが無い環境では自動的にスキップされる。
 
 ## 動作確認済み事項
 
