@@ -141,6 +141,75 @@ class Rendering(unittest.TestCase):
         self.assertIn("2つ重ねて", prompt)
         self.assertIn("「k以上の偶数の要素」は可", prompt)
 
+    def test_zero_gets_its_own_template(self):
+        # 「ちょうど0」 is an equality, and template (a)'s rules for a range
+        # left the model nothing but padding: all 11 responses were
+        # 「0に等しいの」/「0に等しいこと」 and the key survived the human
+        # approval step with zero entries
+        self.assertEqual(PRIMITIVES["filter:zero"].template_id, "e")
+        for key in ("filter:even", "filter:ge_k", "filter:positive", "filter:negative"):
+            self.assertEqual(PRIMITIVES[key].template_id, "a", key)
+
+    def test_zero_prompt_lists_the_endings_instead_of_describing_them(self):
+        prompt = render_user_prompt(PRIMITIVES["filter:zero"])
+        for ending in ("「ちょうど0の」", "「0に等しい」", "「0と一致する」", "「0である」"):
+            self.assertIn(ending, prompt, ending)
+        # the form template (a) forbids is the one that survives here: it is
+        # the only natural 連体形 left once 「の」 cannot be appended
+        self.assertIn("断定の連体形「〜である」", prompt)
+        self.assertNotIn("断定の「〜である」で終えないこと", prompt)
+
+    def test_zero_prompt_forbids_the_appended_no(self):
+        # 「0に等しい」 is already a 連体形; (a)'s "append 「の」" advice turned
+        # it into 「0に等しいの」, which is what every response did
+        prompt = render_user_prompt(PRIMITIVES["filter:zero"])
+        self.assertIn("何も書き足さないこと。特に「の」を足さないこと", prompt)
+        self.assertIn("悪い例:「0に等しいの」「0と一致するの」「0であるの」", prompt)
+
+    def test_zero_prompt_never_writes_a_fragment_followed_by_the_nown(self):
+        # the run that fixed the endings still lost 6 responses out of 6 to
+        # 「0に等しい要素」: the template was writing the renderer's own noun
+        # right after a finished fragment, once as a *good* example
+        # (「→「k以上の0に等しい要素」は可」), and the model copied it -- the
+        # same way frame:filter_verb's condition-copying started
+        prompt = render_user_prompt(PRIMITIVES["filter:zero"])
+        for good_example in ("0に等しい要素」は可", "直後に「要素」を置ける"):
+            self.assertNotIn(good_example, prompt, good_example)
+        self.assertIn("悪い例:「0に等しい要素」", prompt)
+
+    def test_zero_prompt_keeps_the_equality_meaning(self):
+        prompt = render_user_prompt(PRIMITIVES["filter:zero"])
+        self.assertIn("等値条件", prompt)
+        for wrong in ("「0以上」", "「0より大きい」", "「0以下」", "「0より小さい」", "「0でない」"):
+            self.assertIn(wrong, prompt, wrong)
+
+    def test_zero_asks_for_fewer_expressions_than_the_range_predicates(self):
+        # a floor of 5 is an instruction to pad when only a handful of genuine
+        # paraphrases exist
+        zero = PRIMITIVES["filter:zero"]
+        self.assertEqual((zero.min_items, zero.max_items), (3, 8))
+        self.assertIn("この条件の自然な言い換えは多くない", render_user_prompt(zero))
+        self.assertEqual(json_schema(zero), string_list_schema(3, 8))
+
+    def test_zero_prompt_still_meets_the_adnominal_slot_contract(self):
+        # (e) is a different prompt, not a different slot type: the fragment
+        # is still concatenated with other fragments and handed to
+        # frame:filter_verb's noun
+        prompt = render_user_prompt(PRIMITIVES["filter:zero"])
+        self.assertIn("「要素」「もの」「値」「数」「こと」「とき」で終わる表現は出力しないこと", prompt)
+        self.assertIn("「だけ」「のみ」", prompt)
+        self.assertIn("それは生成器側が付ける", prompt)
+        self.assertIn("前に別の条件を置いて読んでも自然な形にすること", prompt)
+        self.assertIn("「値が」「要素が」のような主語", prompt)
+
+    def test_zero_prompt_has_no_unused_substitution_value(self):
+        # every value in substitutions() is recorded in the generation log as
+        # part of the prompt, so (e), which has no {var_note} site, must not
+        # carry one
+        self.assertEqual(
+            set(PRIMITIVES["filter:zero"].substitutions()), {"count", "description"}
+        )
+
     def test_action_pair_prompt_pins_down_the_pair_forms(self):
         # a first run returned "kを加える操作" as a terminal and te == terminal
         prompt = render_user_prompt(PRIMITIVES["map:add_k"])
@@ -289,6 +358,7 @@ class DocumentIsTheSourceOfTruth(unittest.TestCase):
             ("#### (b) ", TEMPLATES["b"]),
             ("#### (c) ", TEMPLATES["c"]),
             ("#### (d) ", TEMPLATES["d"]),
+            ("#### (e) ", TEMPLATES["e"]),
         ):
             self.assertEqual(self._block_after(heading), template, heading)
 

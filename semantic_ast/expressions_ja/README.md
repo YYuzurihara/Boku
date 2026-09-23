@@ -24,12 +24,14 @@ python -m unittest discover -s semantic_ast/tests -v
 
 ## 1. プロンプト（`ja_prompts.py`）
 
-`THIRD_PARTY.md`「プリミティブへの問い合わせプロンプト」のsystem prompt・テンプレート(a)〜(d)・代入値表・出力JSONスキーマをそのまま写したモジュール。**文面の正はあくまで`THIRD_PARTY.md`**で、こちらはその機械可読なコピー。
+`THIRD_PARTY.md`「プリミティブへの問い合わせプロンプト」のsystem prompt・テンプレート(a)〜(e)・代入値表・出力JSONスキーマをそのまま写したモジュール。**文面の正はあくまで`THIRD_PARTY.md`**で、こちらはその機械可読なコピー。
 
 ```bash
 python semantic_ast/expressions_ja/ja_prompts.py                # 全プロンプトを表示
 python semantic_ast/expressions_ja/ja_prompts.py filter:ge_k    # 1件だけ表示
 ```
+
+テンプレートはスロット型ごとの(a)〜(d)に加え、`filter:zero`専用の(e)がある。(a)は「k以上の」「偶数の」のような**範囲**を表す述語向けに書かれていて、等値条件の`filter:zero`に当てると逃げ道が塞がる（「0に等しい」はすでに連体形なので(a)の言う「末尾に「の」を付ける」余地がなく、残る自然な形「0である」は(a)が禁じている）。実際、(a)での生成は11件すべてが「0に等しいの」「0に等しいこと」の類になり、人間チェック後に残った表現が0件になった。(e)は許す末尾の形を列挙で示し、余計な「の」を名指しで禁じ、件数を3〜8に下げている。
 
 プロンプトはテンプレートIDと代入値で一意に決まるので、`prompt_sha256()`が`homework.md`の要求する「プロンプトのハッシュ値」になる。
 
@@ -38,11 +40,12 @@ python semantic_ast/expressions_ja/ja_prompts.py filter:ge_k    # 1件だけ表�
 ```bash
 python semantic_ast/expressions_ja/ja_teacher.py                      # 全キーを生成
 python semantic_ast/expressions_ja/ja_teacher.py --keys filter:ge_k   # 一部だけ再生成（--merge で既存に上書き）
+python semantic_ast/expressions_ja/ja_teacher.py --keys filter:zero --merge   # 専用プロンプト(e)で filter:zero だけ作り直す
 python semantic_ast/expressions_ja/ja_teacher.py --dry-run            # モデルを読み込まずプロンプトとログだけ確認
 python semantic_ast/expressions_ja/ja_teacher.py --report-contract    # 生成済み辞書を結合契約（下記4.）で検査するだけ
 ```
 
-`THIRD_PARTY.md`「呼び出し方法（vLLM 0.29.0）」の通り、非thinkingモード（`chat_template_kwargs={"enable_thinking": False}`）と構造化出力（`StructuredOutputsParams(json=...)`）で呼ぶ。1キーあたりの生成件数は5〜15件（`frame:filter_verb`のみ4〜8件）。出力は2ファイル:
+`THIRD_PARTY.md`「呼び出し方法（vLLM 0.29.0）」の通り、非thinkingモード（`chat_template_kwargs={"enable_thinking": False}`）と構造化出力（`StructuredOutputsParams(json=...)`）で呼ぶ。1キーあたりの生成件数は5〜15件（`frame:filter_verb`は4〜8件、`filter:zero`は3〜8件）。`--keys`に`--merge`を添えると、指定したキーだけを同じ`candidates.json`に上書きし、生成ログにも追記する（他の25キーは触らない）。出力は2ファイル:
 
 - `candidates.json` — 表現辞書本体（下記の形式。人間チェックの対象）
 - `generation_log.jsonl` — 1プリミティブ1行。`homework.md`の記録項目（モデル名・revision・量子化方式・推論ライブラリ+バージョン・system prompt・sampling設定・seed・生成日時・プロンプトのハッシュ値）と**生の応答文字列**を残す

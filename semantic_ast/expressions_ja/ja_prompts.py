@@ -2,8 +2,10 @@
 への問い合わせプロンプト").
 
 THIRD_PARTY.md fixes, in prose, the exact strings this module has to build:
-one common system prompt, four user-prompt templates (one per slot type),
-and the substitution table (one row per expression-dictionary key).
+one common system prompt, five user-prompt templates (one per slot type,
+plus (e) for ``filter:zero``, whose equality condition template (a) could
+only paraphrase by padding -- see ``TEMPLATE_EQUALITY``), and the
+substitution table (one row per expression-dictionary key).
 Everything here is a literal transcription of that document -- the document
 is the normative source, this module is only the machine-readable copy of
 it, so *any* wording change belongs in THIRD_PARTY.md first.
@@ -17,7 +19,7 @@ one per dictionary key that ja_generator.py can actually ask for. The
 discrepancy is left for the document to resolve; nothing here depends on
 the count.
 
-The wording of the system prompt and of templates (a)-(d) is checked
+The wording of the system prompt and of templates (a)-(e) is checked
 against THIRD_PARTY.md by ``tests/test_ja_prompts.py``, so the two cannot
 drift apart silently.
 
@@ -145,11 +147,59 @@ TEMPLATE_TEXT = """Python関数 solve(xs, k) を実装させるための、日�
 
 出力はJSONスキーマに従うこと。"""
 
+# filter:zero only. Template (a) is written for predicates that describe a
+# *range* (「k以上の」「偶数の」), and every one of its escape hatches is closed
+# for an equality with one number: 「0に等しい」「0と一致する」 are already
+# 連体形 with nowhere to put (a)'s 「の」, and the one remaining natural form,
+# 「0である」, is what (a) forbids. The model was left with padding -- all 11
+# responses came back as 「0に等しいの」 / 「0に等しいこと」 and the human
+# approval step dropped the key to zero entries (filtered.json). This template
+# lists the endings that are allowed instead of describing them, names the
+# stray 「の」 as the bad example, and asks for 3〜8 rather than 5〜15, because
+# there are only a handful of genuine paraphrases of 「ちょうど0」 and a higher
+# floor is itself an instruction to pad.
+#
+# A second run with this template fixed the endings themselves
+# (「0に等しい」「0である」「0と一致する」) but appended the frame's own noun to
+# every one of the 6: 「0に等しい要素」. The template was writing 「要素」 right
+# after a finished fragment -- 「その末尾のまま直後に「要素」を置ける」 and, worse,
+# 「「k以上の」＋「0に等しい」→「k以上の0に等しい要素」は可」, a complete wrong
+# answer presented as a good example. That is exactly how frame:filter_verb's
+# condition-copying started, so the template no longer writes any 「…要素」
+# string at all. (frame:filter_verb's other remedy, a structured-output
+# pattern, does not work for this key -- see FRAG_PREFIX_PATTERN's note.)
+TEMPLATE_EQUALITY = """Python関数 solve(xs, k) の中で、リスト xs の要素に対する次の条件を表す日本語表現を、{count}種類、重複なく列挙してください。
+
+条件: {description}
+
+これは大小の比較ではなく、ちょうど1つの値と一致するかどうかを問う等値条件です。「0以上」「0より大きい」「0以下」「0より小さい」のような大小の条件や、「0でない」のような否定は、意味が変わるので出力しないでください。
+
+出力する表現は、条件そのものだけを述べた連体修飾のフラグメントです。修飾される名詞と、絞り込みを表す述語は、生成器側が後ろに補います。表現自体には名詞も述語も含めないでください。
+
+出力してよい末尾は次の4つだけです。下の例はそれぞれ完成した1件の表現であり、この形のまま出力できます。
+- 「〜の」で終える形。例:「ちょうど0の」
+- 形容詞の連体形。例:「0に等しい」「0と等しい」
+- 動詞の連体形。例:「0と一致する」
+- 断定の連体形「〜である」。例:「0である」
+
+制約:
+- 「0」または「ゼロ」を必ず表現に含めること。
+- 上の4つの例の後ろに、何も書き足さないこと。特に「の」を足さないこと。悪い例:「0に等しいの」「0と一致するの」「0であるの」。
+- 修飾される名詞は生成器側が補うので、表現に含めないこと。「要素」「もの」「値」「数」「こと」「とき」で終わる表現は出力しないこと。悪い例:「0に等しい要素」「0と等しい値」「0であること」。
+- 「だけ」「のみ」「を残す」「を抽出する」「を選ぶ」のような、絞り込みそのものを表す語を含めないこと（それは生成器側が付ける）。悪い例:「0に等しいものだけ」。
+- 「値が」「要素が」のような主語を含めないこと。悪い例:「値が0である」。
+- 「0です」のような丁寧形や、「0であり」「0に等しく」のような連用中止形は出力しないこと。
+- 別の条件の連体修飾が前に付くことがあるため、前に別の条件を置いて読んでも自然な形にすること（「k以上の」＋「0に等しい」の順に並ぶ）。
+- この条件の自然な言い換えは多くない。件数を満たすために語を付け足した表現を作らず、自然な言い換えが尽きたら指定された件数の下限で止めること。
+
+出力はJSONスキーマに従うこと。"""
+
 TEMPLATES: dict[str, str] = {
     "a": TEMPLATE_ADNOMINAL,
     "b": TEMPLATE_ACTION_PAIR,
     "c": TEMPLATE_FILTER_VERB,
     "d": TEMPLATE_TEXT,
+    "e": TEMPLATE_EQUALITY,
 }
 
 # The placeholder that frame:filter_verb expressions must carry (rendered
@@ -213,6 +263,28 @@ def action_pair_schema(min_items: int, max_items: int, pattern: Optional[str] = 
 # and no other braces anywhere.
 FRAG_PREFIX_PATTERN = r"^\{frag\}[^{}]+$"
 
+# A note on why filter:zero does *not* get the same treatment, even though its
+# prose was ignored the same way frame:filter_verb's was. Two patterns were
+# tried and neither held at generation time:
+#
+# * The first was written as "any character except 「い」「る」...". xgrammar's
+#   negated character classes are ASCII-only: it clamped the class ("Negative
+#   Character class contains byte greater than 127, clamping to 127",
+#   grammar_functor.cc), dropped the exclusions, and warned rather than failed.
+# * The second used positive alternatives only, and compiled without a
+#   warning. Checked offline through ``xgr.Grammar.from_json_schema``, it
+#   accepts the four intended endings and rejects every bad response we had
+#   seen -- and yet the run it produced was byte-identical to the run with the
+#   broken pattern: the same violating expressions, and the array closed with a
+#   full-width 「｝」 followed by free prose, which is what an unconstrained
+#   request looks like. The recognizer is right and the mask does not follow
+#   it, so the constraint is not something this pipeline can rely on here.
+#
+# What holds the shape for filter:zero is therefore the prose of template (e),
+# plus the two steps that already exist for every other key:
+# ``ja_generator.contract_problems`` names the entries that cannot join, and
+# the human approval step drops them (filtered.json).
+
 
 # ---------------------------------------------------------------------------
 # 27プリミティブの代入値 (THIRD_PARTY.md "### 27プリミティブの代入値")
@@ -272,6 +344,12 @@ class PrimitiveSpec:
 MIN_ITEMS = 5
 MAX_ITEMS = 15
 
+# filter:zero (template (e)). 「ちょうど0」 has only a handful of natural
+# paraphrases, so the (a) floor of 5 was itself padding the array; see
+# TEMPLATE_EQUALITY.
+ZERO_MIN_ITEMS = 3
+ZERO_MAX_ITEMS = 8
+
 
 def _filter_spec(op: str, description: str, var_note: str) -> PrimitiveSpec:
     return PrimitiveSpec(
@@ -308,7 +386,18 @@ _SPECS: tuple[PrimitiveSpec, ...] = (
     _filter_spec("multiple_of_k", "変数kで割り切れること（kの倍数である）", K_NOTE),
     _filter_spec("positive", "0より真に大きいこと（正である。0自体は含まない）", NO_VAR_NOTE),
     _filter_spec("negative", "0より真に小さいこと（負である。0自体は含まない）", NO_VAR_NOTE),
-    _filter_spec("zero", "ちょうど0であること（0に等しい）", NO_VAR_NOTE),
+    # The one filter that does not use template (a): an equality, not a range.
+    # ``var_note`` is left empty because (e) has no {var_note} site -- an
+    # unused value would still be recorded in the generation log as if it had
+    # been part of the prompt.
+    PrimitiveSpec(
+        key="filter:zero",
+        slot_type=ADNOMINAL,
+        template_id="e",
+        min_items=ZERO_MIN_ITEMS,
+        max_items=ZERO_MAX_ITEMS,
+        description="ちょうど0であること（0に等しい）",
+    ),
     # --- map: ACTION_PAIR x7, template (b) ---------------------------------
     _action_spec("map:add_k", "各要素に変数kを足す（加算する）", K_NOTE),
     _action_spec(

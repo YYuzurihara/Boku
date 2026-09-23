@@ -9,13 +9,16 @@ from __future__ import annotations
 
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 _SEMANTIC_AST = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_SEMANTIC_AST))
 sys.path.insert(0, str(_SEMANTIC_AST / "expressions_ja"))
 
+import ja_teacher  # noqa: E402
 from ja_prompts import PRIMITIVES  # noqa: E402
 from ja_teacher import SamplingConfig, _specs_for, parse_response, salvage_expressions  # noqa: E402
 
@@ -114,6 +117,52 @@ class KeySelection(unittest.TestCase):
         with self.assertRaises(SystemExit) as ctx:
             _specs_for(["filter:nope"])
         self.assertIn("filter:nope", str(ctx.exception))
+
+
+class SingleKeyRerun(unittest.TestCase):
+    """``--keys <key> --merge`` regenerates one primitive in place.
+
+    This is how a key with its own prompt (``filter:zero``, template (e)) is
+    re-generated without touching the other 25: it writes into the same
+    ``candidates.json`` and appends to the same generation log.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.out = self.tmp / "candidates.json"
+        self.log = self.tmp / "generation_log.jsonl"
+        self.out.write_text(
+            json.dumps(
+                {
+                    "filter:even": {"slot_type": "ADNOMINAL", "expressions": ["偶数の"]},
+                    "filter:zero": {"slot_type": "ADNOMINAL", "expressions": ["0に等しいの"]},
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        self.log.write_text(json.dumps({"prompt": {"key": "filter:even"}}) + "\n", encoding="utf-8")
+
+    def _run(self, response: dict) -> dict:
+        with mock.patch.object(
+            ja_teacher, "generate", return_value=[json.dumps(response, ensure_ascii=False)]
+        ):
+            code = ja_teacher.main(
+                ["--keys", "filter:zero", "--merge", "--out", str(self.out), "--log", str(self.log)]
+            )
+        self.assertEqual(code, 0)
+        return json.loads(self.out.read_text(encoding="utf-8"))
+
+    def test_only_the_requested_key_is_replaced(self):
+        entries = self._run({"expressions": ["0に等しい", "0である", "ちょうど0の"]})
+        self.assertEqual(entries["filter:even"]["expressions"], ["偶数の"])
+        self.assertEqual(entries["filter:zero"]["expressions"], ["0に等しい", "0である", "ちょうど0の"])
+
+    def test_the_log_keeps_the_other_keys_records(self):
+        self._run({"expressions": ["0に等しい"]})
+        records = [json.loads(line) for line in self.log.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([r["prompt"]["key"] for r in records], ["filter:even", "filter:zero"])
+        self.assertEqual(records[-1]["prompt"]["template_id"], "e")
 
 
 class Sampling(unittest.TestCase):
