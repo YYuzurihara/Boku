@@ -23,11 +23,11 @@ semantic_ast/
   demo.py                    上記を一気通貫で実行し semantic_ast/out/*.jsonl を書き出す
 
   expressions_ja/            意味AST→日本語指示文（instruction_ja）の生成。コードも表現辞書もここ（expressions_ja/README.md）
-  expressions_code/          意味AST→参照コード（reference_code）の生成（未着手）
-  tests/                     単体テスト（164件、外部依存なし。expressions_ja/のテストもGPU・モデル不要）
+  expressions_code/          意味AST→Pythonコードの構造的変換（複数スタイル）と参照インタプリタとの突き合わせ（expressions_code/README.md）
+  tests/                     単体テスト（外部依存なし。expressions_ja/のテストもGPU・モデル不要、expressions_code/のテストもDocker不要）
 ```
 
-日本語指示文の生成は[expressions_ja/README.md](expressions_ja/README.md)に分けてある（プロンプト・表現辞書・結合規則・結合契約）。テストだけはパッケージ共通の`tests/`に置いたままにしている。
+日本語指示文の生成は[expressions_ja/README.md](expressions_ja/README.md)に、コードの構造的変換は[expressions_code/README.md](expressions_code/README.md)に分けてある。テストだけはパッケージ共通の`tests/`に置いたままにしている。
 
 ## 意味ASTのスキーマ
 
@@ -101,7 +101,7 @@ capped = {name: cap_per_label(group, max_per_label=500, seed=0) for name, group 
 python semantic_ast/demo.py
 ```
 
-全列挙→重複除去→層化分割→漏洩検査→ラベル別上限→テストケース生成、を実行して`semantic_ast/out/{train,val,test}.jsonl`を書き出す（`out/`は生成物なので`.gitignore`済み）。各レコードは`homework.md`のデータレコード例のうち`spec_id`/`semantic_ast`/`semantic_hash`/`tests`に対応する。`instruction_ja`/`reference_code`/`code_style`等は、教師モデルによる日本語表現生成・コードの構造的変換という後続のタスクリスト項目で埋める。
+全列挙→重複除去→層化分割→漏洩検査→ラベル別上限→テストケース生成、を実行して`semantic_ast/out/{train,val,test}.jsonl`を書き出す（`out/`は生成物なので`.gitignore`済み）。各レコードは`homework.md`のデータレコード例のうち`spec_id`/`semantic_ast`/`semantic_hash`/`tests`に対応する。`instruction_ja`は`expressions_ja/`が`out/instructions_{split}.jsonl`に、`reference_code`/`code_style`は`expressions_code/`が`out/code_{split}.jsonl`に、それぞれ同じ`spec_id`で書き出す。
 
 ### 日本語指示文の生成
 
@@ -110,6 +110,24 @@ python semantic_ast/demo.py
 ```bash
 python semantic_ast/expressions_ja/ja_teacher.py   # 表現辞書を生成（要GPU）
 python semantic_ast/expressions_ja/ja_demo.py      # 表現辞書→結合→保存→再現性検証
+```
+
+### コードの構造的変換
+
+同じ意味ASTから複数の等価なPythonコード（スタイル違い）を生成し、参照インタプリタと突き合わせる部分は`expressions_code/`に分けてある。スタイル軸・タグによる出し分け・検証の詳細は[expressions_code/README.md](expressions_code/README.md)を参照。
+
+```python
+from code_generator import variants
+from schema import SemanticAST
+
+ast = SemanticAST(filters=("even", "ge_k"), map_ops=(("mul_const", 2),), order_op="ascending")
+for variant in variants(ast, n=3):
+    print(variant.style.name)
+    print(variant.code)
+```
+
+```bash
+python semantic_ast/expressions_code/code_demo.py  # 生成→検証→out/code_{split}.jsonl→再生成一致の確認
 ```
 
 ### 単体テスト
@@ -121,6 +139,5 @@ python -m unittest discover -s semantic_ast/tests -v
 ## このパッケージが担っていないこと（後続のタスクリスト項目）
 
 - 生成された日本語表現の人間によるチェック・承認（`expressions_ja/README.md`「このディレクトリが担っていないこと」）
-- 意味ASTに基づくコードの構造的変換（コード生成器。`expressions_code/`）
-- 生成コードの`sandbox/`によるサンドボックス実行検証
+- 生成コードの`sandbox/`（Docker）による本番検証と、訓練候補の選抜（`expressions_code/README.md`「このディレクトリが担っていないこと」）
 - BPEトークナイザ・モデル本体・学習・評価
