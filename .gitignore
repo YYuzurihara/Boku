@@ -14,3 +14,6 @@ semantic_ast/out/
 
 # Dry-run generation log (see semantic_ast/expressions_ja/ja_teacher.py --dry-run)
 semantic_ast/expressions_ja/*.dry-run.jsonl
+
+# Trained tokenizer artifact (see tokenizer/demo.py)
+tokenizer/out/

@@ -223,11 +223,15 @@ name = "boku"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "tokenizers" },
     { name = "vllm" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "vllm", specifier = ">=0.29.0" }]
+requires-dist = [
+    { name = "tokenizers", specifier = ">=0.23.2" },
+    { name = "vllm", specifier = ">=0.29.0" },
+]
 
 [[package]]
 name = "cachetools"
