@@ -1,0 +1,551 @@
+{
+  "filter:even": {
+    "slot_type": "ADNOMINAL",
+    "expressions": [
+      "2で割り切れる",
+      "2で割った余りが0になる",
+      "偶数の",
+      "2の倍数の",
+      "余りが0になる",
+      "2の倍数である"
+    ]
+  },
+  "filter:odd": {
+    "slot_type": "ADNOMINAL",
+    "expressions": [
+      "2で割り切れない",
+      "余りが1の",
+      "偶数ではない",
+      "余りが1である",
+      "奇数ではない"
+    ]
+  },
+  "filter:gt_k": {
+    "slot_type": "ADNOMINAL",
+    "expressions": [
+      "kより大きい",
+      "kよりも大きい"
+    ]
+  },
+  "filter:ge_k": {
+    "slot_type": "ADNOMINAL",
+    "expressions": [
+      "k以上の",
+      "k以上である"
+    ]
+  },
+  "filter:lt_k": {
+    "slot_type": "ADNOMINAL",
+    "expressions": [
+      "kより小さい",
+      "kよりも小さい",
+      "k未満の"
+    ]
+  },
+  "filter:le_k": {
+    "slot_type": "ADNOMINAL",
+    "expressions": [
+      "k以下の",
+      "k以下のもので抽出する",
+      "k以下のもので選ぶ",
+      "k以下のもので絞る",
+      "k以下のもので限定する"
+    ]
+  },
+  "filter:multiple_of_k": {
+    "slot_type": "ADNOMINAL",
+    "expressions": [
+      "kで割り切れる",
+      "kでわる",
+      "kで割れる",
+      "kの倍数の",
+      "kの倍数である"
+    ]
+  },
+  "filter:positive": {
+    "slot_type": "ADNOMINAL",
+    "expressions": [
+      "正である",
+      "0より大きい"
+    ]
+  },
+  "filter:negative": {
+    "slot_type": "ADNOMINAL",
+    "expressions": [
+      "負の",
+      "0より小さい",
+      "負である",
+      "正ではない",
+      "0を下回る",
+      "マイナスである",
+      "0未満の",
+      "マイナスの"
+    ]
+  },
+  "filter:zero": {
+    "slot_type": "ADNOMINAL",
+    "expressions": [
+    ]
+  },
+  "map:add_k": {
+    "slot_type": "ACTION_PAIR",
+    "expressions": [
+      {
+        "terminal": "kを加える",
+        "te": "kを加えて"
+      },
+      {
+        "terminal": "kを加算する",
+        "te": "kを加算して"
+      },
+      {
+        "terminal": "kを足す",
+        "te": "kを足して"
+      }
+    ]
+  },
+  "map:sub_k": {
+    "slot_type": "ACTION_PAIR",
+    "expressions": [
+      {
+        "terminal": "kを引く",
+        "te": "kを引いて"
+      },
+      {
+        "terminal": "要素からkを引く",
+        "te": "要素からkを引いて"
+      },
+      {
+        "terminal": "kを要素から引く",
+        "te": "kを要素から引いて"
+      },
+      {
+        "terminal": "要素をkで引く",
+        "te": "要素をkで引いて"
+      },
+      {
+        "terminal": "kを減算する",
+        "te": "kを減算して"
+      },
+      {
+        "terminal": "kを要素から減算する",
+        "te": "kを要素から減算して"
+      },
+      {
+        "terminal": "要素をkで減算する",
+        "te": "要素をkで減算して"
+      },
+      {
+        "terminal": "kを減らす",
+        "te": "kを減らして"
+      },
+      {
+        "terminal": "要素をkで減らす",
+        "te": "要素をkで減らして"
+      }
+    ]
+  },
+  "map:mul_k": {
+    "slot_type": "ACTION_PAIR",
+    "expressions": [
+      {
+        "terminal": "kを掛ける",
+        "te": "kを掛けて"
+      },
+      {
+        "terminal": "kを乗算する",
+        "te": "kを乗算して"
+      },
+      {
+        "terminal": "kを倍える",
+        "te": "kを倍えて"
+      },
+      {
+        "terminal": "kを数値でかける",
+        "te": "kを数値でかけて"
+      },
+      {
+        "terminal": "kをスカラーでかける",
+        "te": "kをスカラーでかけて"
+      },
+      {
+        "terminal": "kを因子にかける",
+        "te": "kを因子にかけて"
+      },
+      {
+        "terminal": "kを定数でかける",
+        "te": "kを定数でかけて"
+      },
+      {
+        "terminal": "kを係数にかける",
+        "te": "kを係数にかけて"
+      },
+      {
+        "terminal": "kを定数倍する",
+        "te": "kを定数倍して"
+      },
+      {
+        "terminal": "kを数値倍する",
+        "te": "kを数値倍して"
+      },
+      {
+        "terminal": "kをスカラー倍する",
+        "te": "kをスカラー倍して"
+      },
+      {
+        "terminal": "kを因子倍する",
+        "te": "kを因子倍して"
+      }
+    ]
+  },
+  "map:negate": {
+    "slot_type": "ACTION_PAIR",
+    "expressions": [
+      {
+        "terminal": "符号を反転する",
+        "te": "符号を反転して"
+      },
+      {
+        "terminal": "正負を逆転する",
+        "te": "正負を逆転して"
+      },
+      {
+        "terminal": "正負を入れ替える",
+        "te": "正負を入れ替えて"
+      },
+      {
+        "terminal": "正負を交換する",
+        "te": "正負を交換して"
+      },
+      {
+        "terminal": "符号を反転させる",
+        "te": "符号を反転させて"
+      },
+      {
+        "terminal": "正負を反転させる",
+        "te": "正負を反転させて"
+      },
+      {
+        "terminal": "正負を交換させる",
+        "te": "正負を交換させて"
+      }
+    ]
+  },
+  "map:abs": {
+    "slot_type": "ACTION_PAIR",
+    "expressions": [
+      {
+        "terminal": "絶対値に変換する",
+        "te": "絶対値に変換して"
+      },
+      {
+        "terminal": "符号を外す",
+        "te": "符号を外して"
+      }
+    ]
+  },
+  "map:square": {
+    "slot_type": "ACTION_PAIR",
+    "expressions": [
+      {
+        "terminal": "2乗する",
+        "te": "2乗して"
+      },
+      {
+        "terminal": "平方する",
+        "te": "平方して"
+      },
+      {
+        "terminal": "平方演算する",
+        "te": "平方演算して"
+      },
+      {
+        "terminal": "各要素を2乗する",
+        "te": "各要素を2乗して"
+      },
+      {
+        "terminal": "各要素を平方する",
+        "te": "各要素を平方して"
+      },
+      {
+        "terminal": "各要素を平方演算する",
+        "te": "各要素を平方演算して"
+      },
+      {
+        "terminal": "平方処理する",
+        "te": "平方処理して"
+      },
+      {
+        "terminal": "平方動作する",
+        "te": "平方動作して"
+      },
+      {
+        "terminal": "平方演算処理する",
+        "te": "平方演算処理して"
+      },
+      {
+        "terminal": "平方計算する",
+        "te": "平方計算して"
+      }
+    ]
+  },
+  "map:mul_const": {
+    "slot_type": "ACTION_PAIR",
+    "expressions": [
+      {
+        "terminal": "N倍する",
+        "te": "N倍して"
+      }
+    ]
+  },
+  "order:ascending": {
+    "slot_type": "ACTION_PAIR",
+    "expressions": [
+      {
+        "terminal": "昇順に並べる",
+        "te": "昇順に並べて"
+      },
+      {
+        "terminal": "小さい順に並べる",
+        "te": "小さい順に並べて"
+      },
+      {
+        "terminal": "リストを小さい順に並べる",
+        "te": "リストを小さい順に並べて"
+      },
+      {
+        "terminal": "リストを昇順に並べる",
+        "te": "リストを昇順に並べて"
+      },
+      {
+        "terminal": "リスト全体を小さい順に並べる",
+        "te": "リスト全体を小さい順に並べて"
+      },
+      {
+        "terminal": "リスト全体を昇順に並べる",
+        "te": "リスト全体を昇順に並べて"
+      }
+    ]
+  },
+  "order:descending": {
+    "slot_type": "ACTION_PAIR",
+    "expressions": [
+      {
+        "terminal": "降順に並べる",
+        "te": "降順に並べて"
+      },
+      {
+        "terminal": "大きい順に並べる",
+        "te": "大きい順に並べて"
+      },
+      {
+        "terminal": "リストを降順に並べる",
+        "te": "リストを降順に並べて"
+      },
+      {
+        "terminal": "リストを大きい順に並べる",
+        "te": "リストを大きい順に並べて"
+      }
+    ]
+  },
+  "order:reverse": {
+    "slot_type": "ACTION_PAIR",
+    "expressions": [
+      {
+        "terminal": "逆転させる",
+        "te": "逆転して"
+      },
+      {
+        "terminal": "反転させる",
+        "te": "反転して"
+      },
+      {
+        "terminal": "並びを逆にする",
+        "te": "並びを逆にして"
+      },
+      {
+        "terminal": "順序を逆にする",
+        "te": "順序を逆にして"
+      },
+      {
+        "terminal": "並びを反転する",
+        "te": "並びを反転して"
+      },
+      {
+        "terminal": "列を逆にする",
+        "te": "列を逆にして"
+      },
+      {
+        "terminal": "順序を反転する",
+        "te": "順序を反転して"
+      },
+      {
+        "terminal": "並びを逆転する",
+        "te": "並びを逆転して"
+      },
+      {
+        "terminal": "列を反転する",
+        "te": "列を反転して"
+      },
+      {
+        "terminal": "順序を逆転する",
+        "te": "順序を逆転して"
+      },
+      {
+        "terminal": "並びを反転させる",
+        "te": "並びを反転させて"
+      },
+      {
+        "terminal": "列を反転させる",
+        "te": "列を反転させて"
+      },
+      {
+        "terminal": "順序を反転させる",
+        "te": "順序を反転させて"
+      },
+      {
+        "terminal": "並びを逆転させる",
+        "te": "並びを逆転させて"
+      }
+    ]
+  },
+  "slice:take_first_k": {
+    "slot_type": "ACTION_PAIR",
+    "expressions": [
+      {
+        "terminal": "先頭からk個の要素を取る",
+        "te": "先頭からk個の要素を取って"
+      },
+      {
+        "terminal": "先頭からk個の要素を抽出する",
+        "te": "先頭からk個の要素を抽出して"
+      },
+      {
+        "terminal": "先頭からk個の要素を取得する",
+        "te": "先頭からk個の要素を取得して"
+      },
+      {
+        "terminal": "先頭からk個の要素を切り取る",
+        "te": "先頭からk個の要素を切り取って"
+      },
+      {
+        "terminal": "先頭からk個の要素を切り出す",
+        "te": "先頭からk個の要素を切り出して"
+      }
+    ]
+  },
+  "slice:take_last_k": {
+    "slot_type": "ACTION_PAIR",
+    "expressions": [
+      {
+        "terminal": "末尾からk個を取る",
+        "te": "末尾からk個を取って"
+      },
+      {
+        "terminal": "末尾からk個を取り出す",
+        "te": "末尾からk個を取り出して"
+      },
+      {
+        "terminal": "末尾からk個を抽出する",
+        "te": "末尾からk個を抽出して"
+      },
+      {
+        "terminal": "末尾からk個を取得する",
+        "te": "末尾からk個を取得して"
+      },
+      {
+        "terminal": "末尾からk個を切り取る",
+        "te": "末尾からk個を切り取って"
+      },
+      {
+        "terminal": "末尾からk個を抜き出す",
+        "te": "末尾からk個を抜き出して"
+      },
+      {
+        "terminal": "末尾からk個を切り出す",
+        "te": "末尾からk個を切り出して"
+      },
+      {
+        "terminal": "末尾からk個を切り離す",
+        "te": "末尾からk個を切り離して"
+      }
+    ]
+  },
+  "slice:step_2": {
+    "slot_type": "ACTION_PAIR",
+    "expressions": [
+      {
+        "terminal": "1個おきに先頭から取り出す",
+        "te": "1個おきに先頭から取り出して"
+      },
+      {
+        "terminal": "先頭から1個おきに要素を抽出する",
+        "te": "先頭から1個おきに要素を抽出して"
+      },
+      {
+        "terminal": "先頭の要素から1個おきに選ぶ",
+        "te": "先頭の要素から1個おきに選んで"
+      },
+      {
+        "terminal": "先頭から始めて1個おきに処理する",
+        "te": "先頭から始めて1個おきに処理して"
+      },
+      {
+        "terminal": "先頭から1個おきに要素を取得する",
+        "te": "先頭から1個おきに要素を取得して"
+      },
+      {
+        "terminal": "先頭から1個おきに要素を列挙する",
+        "te": "先頭から1個おきに要素を列挙して"
+      },
+      {
+        "terminal": "先頭から始めて1個おきに選ぶ",
+        "te": "先頭から始めて1個おきに選んで"
+      },
+      {
+        "terminal": "先頭から1個おきに処理する",
+        "te": "先頭から1個おきに処理して"
+      }
+    ]
+  },
+  "frame:filter_verb": {
+    "slot_type": "ACTION_PAIR",
+    "expressions": [
+      {
+        "terminal": "{frag}要素だけを残す",
+        "te": "{frag}要素だけを残し"
+      },
+      {
+        "terminal": "{frag}ものだけを残す",
+        "te": "{frag}ものだけを残し"
+      },
+      {
+        "terminal": "{frag}値だけを残す",
+        "te": "{frag}値だけを残し"
+      }
+    ]
+  },
+  "frame:opening": {
+    "slot_type": "TEXT",
+    "expressions": [
+      "整数のリストxsについて、",
+      "xsという整数のリストに対して、",
+      "整数リストxsを対象として、",
+      "xsというリストの整数を対象とし、",
+      "xsという整数のリストを対象に、",
+      "xsという整数のリストを対象として処理するとき、",
+      "整数のリストxsを対象として処理するとき、"
+    ]
+  },
+  "frame:closing": {
+    "slot_type": "TEXT",
+    "expressions": [
+      "Python関数solveを実装してください。",
+      "solve関数を準備してください。",
+      "solveを構築してください。",
+      "solveを定義してください。",
+      "solveを用意してください。",
+      "solveを設計してください。"
+    ]
+  }
+}
