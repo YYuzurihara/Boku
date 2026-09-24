@@ -17,3 +17,6 @@ semantic_ast/expressions_ja/*.dry-run.jsonl
 
 # Trained tokenizer artifact (see tokenizer/demo.py)
 tokenizer/out/
+
+# Large dataset files
+data/*.jsonl

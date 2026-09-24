@@ -4,7 +4,7 @@ save/load round trip.
 Pipeline exercised here (the right-hand half of ja_generator_plan.md's
 diagram):
 
-    candidates.json  (ja_teacher.py output, or --dictionary)
+    filtered.json    (human-filtered dictionary, or --dictionary)
         -> ja_dictionary.ExpressionDictionary  (structural validation)
         -> ja_generator.render_variants        (per semantic AST)
         -> out/instructions_<split>.jsonl      (save)
@@ -21,8 +21,8 @@ spot, so this script is useful before the full dataset exists.
 
 Usage:
     python semantic_ast/expressions_ja/ja_demo.py
-    python semantic_ast/expressions_ja/ja_demo.py --dictionary semantic_ast/expressions_ja/approved.json
-    python semantic_ast/expressions_ja/ja_demo.py --limit 50 --variants 5
+    python semantic_ast/expressions_ja/ja_demo.py --dictionary semantic_ast/expressions_ja/candidates.json
+    python semantic_ast/expressions_ja/ja_demo.py --limit 50 --variants 5   # quick check
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from generator import enumerate_all  # noqa: E402
-from ja_dictionary import CANDIDATES_PATH, ExpressionDictionary, ExpressionDictionaryError  # noqa: E402
+from ja_dictionary import DEFAULT_DIR, ExpressionDictionary, ExpressionDictionaryError  # noqa: E402
 from ja_generator import (  # noqa: E402
     contract_problems,
     instruction_record,
@@ -54,6 +54,10 @@ from schema import SemanticAST, SemanticASTError  # noqa: E402
 OUT_DIR = Path(__file__).resolve().parent.parent / "out"
 SPLITS = ("train", "val", "test")
 SEED = 0
+# Production dictionary: the human-filtered expressions.
+FILTERED_PATH = DEFAULT_DIR / "filtered.json"
+# data/corpus_generator.py combines 7 instructions per semantic AST.
+N_INSTRUCTIONS = 7
 
 
 def _sample_asts(limit: int) -> list[tuple[str, SemanticAST]]:
@@ -73,7 +77,7 @@ def _asts_from_split(path: Path, limit: int) -> list[tuple[str, SemanticAST]]:
     out: list[tuple[str, SemanticAST]] = []
     with path.open(encoding="utf-8") as f:
         for line in f:
-            if len(out) >= limit:
+            if limit and len(out) >= limit:
                 break
             record = json.loads(line)
             try:
@@ -108,9 +112,9 @@ def _verify(path: Path, dictionary: ExpressionDictionary) -> list[str]:
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--dictionary", type=Path, default=CANDIDATES_PATH)
-    parser.add_argument("--limit", type=int, default=200, help="semantic ASTs per split (default: 200)")
-    parser.add_argument("--variants", type=int, default=3, help="Japanese variants per semantic AST (default: 3)")
+    parser.add_argument("--dictionary", type=Path, default=FILTERED_PATH, help="expression dictionary (default: filtered.json)")
+    parser.add_argument("--limit", type=int, default=0, help="semantic ASTs per split, 0 for all (default: 0)")
+    parser.add_argument("--variants", type=int, default=N_INSTRUCTIONS, help=f"Japanese variants per semantic AST (default: {N_INSTRUCTIONS})")
     parser.add_argument("--show", type=int, default=5, help="example sentences to print per split")
     parser.add_argument("--out-dir", type=Path, default=OUT_DIR)
     args = parser.parse_args(argv)
@@ -119,7 +123,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         dictionary = ExpressionDictionary.load(args.dictionary, strict=True)
     except ExpressionDictionaryError as exc:
         print(f"cannot use the expression dictionary:\n{exc}", file=sys.stderr)
-        print("\n(run: python semantic_ast/expressions_ja/ja_teacher.py  to generate one)", file=sys.stderr)
+        print("\n(default is semantic_ast/expressions_ja/filtered.json; pass --dictionary to use another)", file=sys.stderr)
         return 1
 
     missing = dictionary.missing_keys()
@@ -140,7 +144,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     sources: list[tuple[str, list[tuple[str, SemanticAST]]]] = []
     for split in SPLITS:
-        path = args.out_dir / f"{split}.jsonl"
+        path = args.out_dir / f"ast_{split}.jsonl"
         if path.exists():
             sources.append((split, _asts_from_split(path, args.limit)))
     if not sources:
