@@ -13,11 +13,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sampling import Pair, sample_pairs  # noqa: E402
+from sampling import sample_pairs  # noqa: E402
 
 
-def _verification(**overrides) -> dict:
-    base = {
+def _record(i: int, **verification_overrides) -> dict:
+    verification = {
         "syntax_ok": True,
         "ast_safe": True,
         "executable": True,
@@ -26,143 +26,66 @@ def _verification(**overrides) -> dict:
         "error": None,
         "cross_check_ok": True,
     }
-    base.update(overrides)
-    return base
-
-
-def _write_jsonl(path: Path, records: list[dict]) -> None:
-    with path.open("w", encoding="utf-8") as f:
-        for record in records:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    verification.update(verification_overrides)
+    return {
+        "spec_id": f"train-{i:06d}",
+        "semantic_hash": f"h{i}",
+        "instruction_ja": f"ja-{i}",
+        "codes": {"code": f"code-{i}\n", "verification": verification},
+    }
 
 
 class SamplePairsTest(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
-        self.dir = Path(self._tmp.name)
-        self.instructions_path = self.dir / "instructions_train.jsonl"
-        self.code_path = self.dir / "code_train.jsonl"
+        self.path = Path(self._tmp.name) / "train.jsonl"
 
-    def _write(self, instructions: list[dict], codes: list[dict]) -> None:
-        _write_jsonl(self.instructions_path, instructions)
-        _write_jsonl(self.code_path, codes)
+    def _write(self, records: list[dict]) -> None:
+        with self.path.open("w", encoding="utf-8") as f:
+            for r in records:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
-    def test_cartesian_product_capped_at_n(self) -> None:
-        self._write(
-            instructions=[
-                {
-                    "spec_id": "train-000000",
-                    "semantic_hash": "h0",
-                    "instruction_ja": ["ja-a", "ja-b", "ja-c"],
-                }
-            ],
-            codes=[
-                {
-                    "spec_id": "train-000000",
-                    "semantic_hash": "h0",
-                    "codes": [
-                        {"code": "code-1\n", "verification": _verification()},
-                        {"code": "code-2\n", "verification": _verification()},
-                        {"code": "code-3\n", "verification": _verification()},
-                    ],
-                }
-            ],
-        )
-        pairs = sample_pairs(self.instructions_path, self.code_path, n_per_ast=5, seed=0)
-        self.assertEqual(len(pairs), 5)
-        # every pair actually comes from the declared cartesian product
-        for p in pairs:
-            self.assertIn(p.instruction_ja, ("ja-a", "ja-b", "ja-c"))
-            self.assertIn(p.code, ("code-1\n", "code-2\n", "code-3\n"))
-        # no duplicate (instruction, code) combination
-        self.assertEqual(len({(p.instruction_ja, p.code) for p in pairs}), 5)
+    def test_takes_percent_of_records_without_repeats(self) -> None:
+        self._write([_record(i) for i in range(200)])
+        pairs = sample_pairs(self.path, percent=10, seed=0)
+        self.assertEqual(len(pairs), 20)
+        self.assertEqual(len({p.spec_id for p in pairs}), 20)
 
-    def test_fewer_combinations_than_n_returns_all(self) -> None:
-        self._write(
-            instructions=[{"spec_id": "s", "semantic_hash": "h", "instruction_ja": ["only-ja"]}],
-            codes=[
-                {
-                    "spec_id": "s",
-                    "semantic_hash": "h",
-                    "codes": [{"code": "only-code\n", "verification": _verification()}],
-                }
-            ],
-        )
-        pairs = sample_pairs(self.instructions_path, self.code_path, n_per_ast=5, seed=0)
-        self.assertEqual(pairs, [Pair(spec_id="s", semantic_hash="h", instruction_ja="only-ja", code="only-code\n")])
+    def test_pair_fields_come_from_the_same_record(self) -> None:
+        self._write([_record(i) for i in range(50)])
+        for p in sample_pairs(self.path, percent=50, seed=1):
+            i = int(p.spec_id.split("-")[1])
+            self.assertEqual((p.semantic_hash, p.instruction_ja, p.code), (f"h{i}", f"ja-{i}", f"code-{i}\n"))
 
-    def test_unverified_code_is_excluded(self) -> None:
-        self._write(
-            instructions=[{"spec_id": "s", "semantic_hash": "h", "instruction_ja": ["ja"]}],
-            codes=[
-                {
-                    "spec_id": "s",
-                    "semantic_hash": "h",
-                    "codes": [
-                        {"code": "bad\n", "verification": _verification(tests_passed=False)},
-                        {"code": "also-bad\n", "verification": _verification(error="boom")},
-                        {"code": "good\n", "verification": _verification()},
-                    ],
-                }
-            ],
-        )
-        pairs = sample_pairs(self.instructions_path, self.code_path, n_per_ast=5, seed=0)
-        self.assertEqual([p.code for p in pairs], ["good\n"])
+    def test_reproducible_and_seed_dependent(self) -> None:
+        self._write([_record(i) for i in range(100)])
+        a = sample_pairs(self.path, percent=20, seed=7)
+        self.assertEqual(a, sample_pairs(self.path, percent=20, seed=7))
+        self.assertNotEqual(a, sample_pairs(self.path, percent=20, seed=8))
 
-    def test_ast_with_no_verified_code_is_skipped_entirely(self) -> None:
-        self._write(
-            instructions=[{"spec_id": "s", "semantic_hash": "h", "instruction_ja": ["ja"]}],
-            codes=[
-                {
-                    "spec_id": "s",
-                    "semantic_hash": "h",
-                    "codes": [{"code": "bad\n", "verification": _verification(ast_safe=False)}],
-                }
-            ],
-        )
-        self.assertEqual(sample_pairs(self.instructions_path, self.code_path), [])
+    def test_percent_bounds(self) -> None:
+        self._write([_record(i) for i in range(10)])
+        self.assertEqual(sample_pairs(self.path, percent=0), [])
+        self.assertEqual(len(sample_pairs(self.path, percent=100)), 10)
+        with self.assertRaises(ValueError):
+            sample_pairs(self.path, percent=101)
 
-    def test_only_specs_common_to_both_files_are_used(self) -> None:
-        self._write(
-            instructions=[
-                {"spec_id": "only-in-instructions", "semantic_hash": "h1", "instruction_ja": ["ja"]},
-                {"spec_id": "shared", "semantic_hash": "h2", "instruction_ja": ["ja"]},
-            ],
-            codes=[
-                {
-                    "spec_id": "only-in-code",
-                    "semantic_hash": "h3",
-                    "codes": [{"code": "c\n", "verification": _verification()}],
-                },
-                {
-                    "spec_id": "shared",
-                    "semantic_hash": "h2",
-                    "codes": [{"code": "c\n", "verification": _verification()}],
-                },
-            ],
-        )
-        pairs = sample_pairs(self.instructions_path, self.code_path)
-        self.assertEqual({p.spec_id for p in pairs}, {"shared"})
+    def test_unverified_records_are_dropped(self) -> None:
+        bad = [
+            _record(0, syntax_ok=False),
+            _record(1, tests_passed=False),
+            _record(2, error="boom"),
+            _record(3, cross_check_ok=False),
+        ]
+        self._write(bad + [_record(4)])
+        self.assertEqual([p.spec_id for p in sample_pairs(self.path, percent=100)], ["train-000004"])
 
-    def test_deterministic_given_seed(self) -> None:
-        self._write(
-            instructions=[{"spec_id": "s", "semantic_hash": "h", "instruction_ja": ["a", "b", "c"]}],
-            codes=[
-                {
-                    "spec_id": "s",
-                    "semantic_hash": "h",
-                    "codes": [
-                        {"code": "1\n", "verification": _verification()},
-                        {"code": "2\n", "verification": _verification()},
-                        {"code": "3\n", "verification": _verification()},
-                    ],
-                }
-            ],
-        )
-        first = sample_pairs(self.instructions_path, self.code_path, n_per_ast=4, seed=7)
-        second = sample_pairs(self.instructions_path, self.code_path, n_per_ast=4, seed=7)
-        self.assertEqual(first, second)
+    def test_missing_cross_check_key_is_accepted(self) -> None:
+        r = _record(0)
+        del r["codes"]["verification"]["cross_check_ok"]
+        self._write([r])
+        self.assertEqual(len(sample_pairs(self.path, percent=100)), 1)
 
 
 if __name__ == "__main__":
