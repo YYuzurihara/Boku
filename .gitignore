@@ -20,3 +20,6 @@ tokenizer/out/
 
 # Large dataset files
 data/*.jsonl
+
+model/out/
+mlruns/
