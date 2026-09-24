@@ -28,7 +28,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--train", type=Path, default=DEFAULT_TRAIN)
     parser.add_argument("--percent", type=float, default=10.0, help="train.jsonlから取るレコードの割合 [%%] (既定: 10)")
-    parser.add_argument("--vocab-size", type=int, default=8192)
+    parser.add_argument("--vocab-size", type=int, default=2048)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
     args = parser.parse_args(argv)

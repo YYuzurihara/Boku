@@ -29,6 +29,10 @@ SPECIAL_TOKENS: tuple[str, ...] = (
     "<|explanation|>",
 )
 
+# 1トークンの最大長（byte-level表現での文字数。日本語1文字は3バイト=3文字分）。
+# 定型の指示文が丸ごと1トークンにマージされるのを防ぐ。
+MAX_TOKEN_LENGTH = 16
+
 # homework.mdの学習レコード例（"## モデル仕様"節）と同じ並び:
 #   <|task|>
 #   {instruction_ja}
@@ -60,6 +64,7 @@ def build_trainer(vocab_size: int, special_tokens: Sequence[str] = SPECIAL_TOKEN
         vocab_size=vocab_size,
         special_tokens=list(special_tokens),
         initial_alphabet=pre_tokenizers.ByteLevel.alphabet(),
+        max_token_length=MAX_TOKEN_LENGTH,
         show_progress=False,
     )
 
