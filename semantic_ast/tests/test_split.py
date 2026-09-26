@@ -14,11 +14,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from generator import enumerate_all, label  # noqa: E402
 from schema import SemanticAST  # noqa: E402
 from split import (  # noqa: E402
+    ALL_SPLITS,
+    BOUNDARY_SPLIT,
+    COMPOSITIONAL_SPLIT,
+    HOLDOUT_PAIRS,
+    PARAPHRASE_SPLIT,
     LeakageError,
     SplitRatios,
     cap_per_label,
     check_no_leakage,
     dedup_by_hash,
+    build_eval_splits,
+    check_holdout_pairs,
+    matches_holdout,
     stratified_split,
 )
 
@@ -106,6 +114,63 @@ class CapPerLabel(unittest.TestCase):
         asts = [SemanticAST(filters=("even",)), SemanticAST(filters=("odd",))]
         out = cap_per_label(asts, max_per_label=100)
         self.assertEqual(len(out), 2)
+
+
+class EvalSplits(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.all_asts = enumerate_all()
+        cls.splits = build_eval_splits(cls.all_asts, seed=0)
+
+    def test_has_the_six_splits_and_covers_every_ast_exactly_once(self):
+        self.assertEqual(tuple(self.splits), ALL_SPLITS)
+        hashes = [a.semantic_hash() for group in self.splits.values() for a in group]
+        self.assertEqual(len(hashes), len(set(hashes)))
+        self.assertEqual(len(hashes), len(self.all_asts))
+
+    def test_no_leakage_between_any_two_splits(self):
+        check_no_leakage(self.splits)
+
+    def test_compositional_split_is_exactly_the_asts_with_a_held_out_pair(self):
+        expected = {a.semantic_hash() for a in self.all_asts if matches_holdout(a)}
+        actual = {a.semantic_hash() for a in self.splits[COMPOSITIONAL_SPLIT]}
+        self.assertEqual(actual, expected)
+        self.assertTrue(actual)
+
+    def test_held_out_pairs_never_occur_together_elsewhere_but_each_op_is_in_train(self):
+        check_holdout_pairs(self.splits)
+        for a, b in HOLDOUT_PAIRS:
+            train = [set(x.op_tags()) for x in self.splits["train"]]
+            self.assertTrue(any(a in t for t in train), a)
+            self.assertTrue(any(b in t for t in train), b)
+            self.assertFalse(any(a in t and b in t for t in train))
+
+    def test_the_papers_example_is_held_out(self):
+        even_desc = SemanticAST(filters=("even",), order_op="descending")
+        self.assertIn(even_desc.semantic_hash(), {a.semantic_hash() for a in self.splits[COMPOSITIONAL_SPLIT]})
+
+    def test_check_holdout_pairs_rejects_a_pair_in_train(self):
+        bad = {**self.splits, "train": self.splits["train"] + [SemanticAST(filters=("even",), order_op="descending")]}
+        with self.assertRaises(LeakageError):
+            check_holdout_pairs(bad)
+
+    def test_check_holdout_pairs_rejects_an_op_missing_from_train(self):
+        bad = {**self.splits, "train": [a for a in self.splits["train"] if "order:descending" not in a.op_tags()]}
+        with self.assertRaises(LeakageError):
+            check_holdout_pairs(bad)
+
+    def test_extra_sets_are_sized_and_the_remainder_is_split_80_10_10(self):
+        n_rest = len(self.all_asts) - len(self.splits[COMPOSITIONAL_SPLIT])
+        for name in (PARAPHRASE_SPLIT, BOUNDARY_SPLIT):
+            self.assertAlmostEqual(len(self.splits[name]) / n_rest, 0.05, delta=0.01)  # per-label rounding of small groups
+        n_main = sum(len(self.splits[n]) for n in ("train", "val", "test"))
+        self.assertAlmostEqual(len(self.splits["val"]) / n_main, 0.1, delta=0.01)
+        self.assertAlmostEqual(len(self.splits["test"]) / n_main, 0.1, delta=0.01)
+
+    def test_deterministic_given_the_seed(self):
+        again = build_eval_splits(self.all_asts, seed=0)
+        for name in ALL_SPLITS:
+            self.assertEqual([a.semantic_hash() for a in again[name]], [a.semantic_hash() for a in self.splits[name]])
 
 
 if __name__ == "__main__":

@@ -18,8 +18,8 @@ semantic_ast/
   schema.py                 意味ASTのデータ構造・検証・正規化・ハッシュ
   reference_interpreter.py  意味ASTを (xs, k) に対して直接実行する「正解を計算する参照インタプリタ」
   generator.py               意味ASTの全列挙 + ラベル付与
-  testcases.py               境界値+ランダムなテストケース生成（参照インタプリタでexpectedを計算）
-  split.py                   重複除去・層化train/val/test分割・漏洩検査・ラベル別上限
+  testcases.py               境界値+ランダムなテストケース生成、境界値テスト専用スイート生成（参照インタプリタでexpectedを計算）
+  split.py                   重複除去・層化train/val/test分割・4種のテスト集合（通常/言い換え/組合せ汎化/境界値）・漏洩検査・ラベル別上限
   demo.py                    上記を一気通貫で実行し semantic_ast/out/*.jsonl を書き出す
 
   expressions_ja/            意味AST→日本語指示文（instruction_ja）の生成。コードも表現辞書もここ（expressions_ja/README.md）
@@ -95,13 +95,31 @@ capped = {name: cap_per_label(group, max_per_label=500, seed=0) for name, group 
 
 `stratified_split`は意味AST単位で分割する（`homework.md`: 「意味ASTを分割した後で言い換えやコード変換を行わないと...データ漏洩...」）。分割の基本単位が意味AST全体なので、後続で1つの意味ASTから何個の日本語言い換え・コード変換を生成しても、それらは自動的に同じsplitに属し、原理的に漏洩しにくい構造になっている。`check_no_leakage`はそれでも万一の重複混入（例: 分割前の重複除去漏れ）を検出するための独立した安全網。
 
+### 4種のテスト集合（`homework.md`「訓練・検証・テスト分割」）
+
+`build_eval_splits`が意味ASTを次の6グループに**互いに素**に分ける（`split.ALL_SPLITS`）。どのグループも意味AST単位なので、`check_no_leakage`が6グループ全体に効く。
+
+| split | 内容 | 何を測るか |
+|---|---|---|
+| `train` / `val` | 残りを80/10/10に層化分割 | 学習・検証 |
+| `test`（通常テスト） | 訓練と同じ演算の語彙・同じ日本語テンプレートで、意味AST・`xs`・`k`が未見 | 基本性能 |
+| `test_paraphrase`（言い換えテスト） | 訓練で使わない日本語テンプレートだけで作った指示文（意味ASTは未見） | 言い回しへの頑健性 |
+| `test_compositional`（組合せ汎化テスト） | `split.HOLDOUT_PAIRS`の演算ペア（例: `filter:even`と`order:descending`）を**同時に含む**意味AST全て | 別々に学んだ演算の組み合わせ |
+| `test_boundary`（境界値テスト） | 空リスト・要素1個・全要素同値・負数のみ・全要素不合格などの入力だけをテストケースにした意味AST | 端の場合の正しさ |
+
+- **組合せ汎化**: ペアは4組（全て異なるカテゴリ間）。ペアを含む意味ASTは`test_compositional`にしか入らず、train/val/test/他の集合には**1件も**入らない。一方でペアの各演算は単独ではtrainに出現する。両方を`check_holdout_pairs`が検査する（demo.pyでも毎回実行）。
+- **言い換え**: 表現辞書の各キー（表現が2件以上あるもの）から`ja_generator.PARAPHRASE_RATIO`（25%、最低1件・全件は不可）を`template_pools`が予約する。`test_paraphrase`はその予約分だけ、他の全split（train/val/test/…）は予約分を**使わない**。表現が1件しかないキー（`map:mul_const`など）は分けられないので全splitで共有し、`shared_keys`に出る。予約分だけでは異なる文がコード件数に満たない意味ASTがあるため、`corpus_generator.py`はこのsplitに限り日本語表現を繰り返してコード件数に合わせる。`ja_demo.py`は保存した各文が自分のsplitのプール内かを検証する。
+- **境界値**: `testcases.generate_boundary_test_cases`が、フィルタを持つ意味ASTには必ず「フィルタが全要素を落とす」入力を含める（全40,589件のうちフィルタ付き38,070件で確認済み）。
+- **通常テスト**: 「指示文と定数が異なる」は、意味AST（`mul_const`の定数を含む）が訓練と重ならず、`xs`・`k`も別に生成されることで満たす。
+- 件数（`MAX_PER_LABEL`前）: train 28,209 / val 3,232 / test 3,232 / paraphrase 1,701 / compositional 2,514 / boundary 1,701。言い換え・境界値は`EvalRatios`（各5%）。
+
 ### 一気通貫デモ
 
 ```bash
 python semantic_ast/demo.py
 ```
 
-全列挙→重複除去→層化分割→漏洩検査→ラベル別上限→テストケース生成、を実行して`semantic_ast/out/{train,val,test}.jsonl`を書き出す（`out/`は生成物なので`.gitignore`済み）。各レコードは`homework.md`のデータレコード例のうち`spec_id`/`semantic_ast`/`semantic_hash`/`tests`に対応する。`instruction_ja`は`expressions_ja/`が`out/instructions_{split}.jsonl`に、`reference_code`/`code_style`は`expressions_code/`が`out/code_{split}.jsonl`に、それぞれ同じ`spec_id`で書き出す。
+全列挙→重複除去→層化分割→漏洩検査→ラベル別上限→テストケース生成、を実行して`semantic_ast/out/ast_{split}.jsonl`（6 split）を書き出す（`out/`は生成物なので`.gitignore`済み）。各レコードは`homework.md`のデータレコード例のうち`spec_id`/`semantic_ast`/`semantic_hash`/`tests`に対応する。`instruction_ja`は`expressions_ja/`が`out/instructions_{split}.jsonl`に、`reference_code`/`code_style`は`expressions_code/`が`out/code_{split}.jsonl`に、それぞれ同じ`spec_id`で書き出す。
 
 ### 日本語指示文の生成
 

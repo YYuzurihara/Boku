@@ -44,20 +44,38 @@ from ja_generator import (  # noqa: E402
     instruction_record,
     leftover_placeholders,
     load_instructions,
+    pool_violations,
     render_from_record,
     render_variants,
     save_instructions,
+    template_pools,
 )
 from schema import SemanticAST, SemanticASTError  # noqa: E402
+from split import ALL_SPLITS, PARAPHRASE_SPLIT  # noqa: E402
 
 # demo.py's splits and this script's output both live in semantic_ast/out/.
 OUT_DIR = Path(__file__).resolve().parent.parent / "out"
-SPLITS = ("train", "val", "test")
+SPLITS = ALL_SPLITS
 SEED = 0
 # Production dictionary: the human-filtered expressions.
 FILTERED_PATH = DEFAULT_DIR / "filtered.json"
-# data/corpus_generator.py combines 7 instructions per semantic AST.
-N_INSTRUCTIONS = 7
+# data/corpus_generator.py pairs one instruction with every generated code of a
+# semantic AST, so by default we render as many instructions as the AST has codes
+# (read from code_{split}.jsonl). Without a code file, fall back to this count.
+FALLBACK_VARIANTS = 20
+
+
+def _code_counts(path: Path) -> dict[str, int]:
+    """``spec_id -> number of codes`` from code_{split}.jsonl (empty if absent)."""
+    if not path.exists():
+        return {}
+    counts: dict[str, int] = {}
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                record = json.loads(line)
+                counts[record["spec_id"]] = len(record["codes"])
+    return counts
 
 
 def _sample_asts(limit: int) -> list[tuple[str, SemanticAST]]:
@@ -93,11 +111,16 @@ def _asts_from_split(path: Path, limit: int) -> list[tuple[str, SemanticAST]]:
     return out
 
 
-def _verify(path: Path, dictionary: ExpressionDictionary) -> list[str]:
-    """Read back a saved JSONL file and check every record replays exactly."""
+def _verify(path: Path, dictionary: ExpressionDictionary, pool: dict) -> list[str]:
+    """Read back a saved JSONL file and check every record replays exactly and
+    stays inside the template ``pool`` its split is allowed to use."""
     problems: list[str] = []
     records = load_instructions(path)
     for record in records:
+        for rendering in record["renderings"]:
+            outside = pool_violations(rendering["choices"], pool)
+            if outside:
+                problems.append(f"{record.get('spec_id')}: used templates outside this split's pool: {', '.join(outside)}")
         replayed = render_from_record(record, dictionary)
         if replayed != record["instruction_ja"]:
             problems.append(f"{record.get('spec_id')}: replay mismatch\n  saved:    {record['instruction_ja']}\n  replayed: {replayed}")
@@ -114,7 +137,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--dictionary", type=Path, default=FILTERED_PATH, help="expression dictionary (default: filtered.json)")
     parser.add_argument("--limit", type=int, default=0, help="semantic ASTs per split, 0 for all (default: 0)")
-    parser.add_argument("--variants", type=int, default=N_INSTRUCTIONS, help=f"Japanese variants per semantic AST (default: {N_INSTRUCTIONS})")
+    parser.add_argument("--variants", type=int, default=0, help=f"Japanese variants per semantic AST; 0 = as many as the AST has codes in code_{{split}}.jsonl, else {FALLBACK_VARIANTS} (default: 0)")
     parser.add_argument("--show", type=int, default=5, help="example sentences to print per split")
     parser.add_argument("--out-dir", type=Path, default=OUT_DIR)
     args = parser.parse_args(argv)
@@ -151,11 +174,20 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"\nno {args.out_dir}/*.jsonl (run demo.py first); using an enumerated sample instead")
         sources.append(("sample", _sample_asts(args.limit)))
 
+    # 言い換えテスト: the reserved templates are used by test_paraphrase only,
+    # and test_paraphrase uses nothing else (where a key can be divided at all).
+    pools = template_pools(dictionary)
+    print(f"  paraphrase templates reserved for {len(pools.paraphrase)} keys "
+          f"(not divisible, shared by every split: {', '.join(pools.shared_keys) or 'none'})")
+
     failures = 0
     for split, items in sources:
+        pool = pools.paraphrase if split == PARAPHRASE_SPLIT else pools.train
         records = []
+        code_counts = _code_counts(args.out_dir / f"code_{split}.jsonl") if not args.variants else {}
         for spec_id, ast in items:
-            renderings = render_variants(ast, dictionary, n=args.variants, seed=SEED)
+            n = args.variants or code_counts.get(spec_id, FALLBACK_VARIANTS)
+            renderings = render_variants(ast, dictionary, n=n, seed=SEED, allowed=pool)
             records.append(instruction_record(ast, renderings, dictionary, spec_id=spec_id, seed=SEED))
 
         path = save_instructions(records, args.out_dir / f"instructions_{split}.jsonl")
@@ -168,7 +200,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             for text in record["instruction_ja"]:
                 print(f"    {text}")
 
-        problems = _verify(path, dictionary)
+        problems = _verify(path, dictionary, pool)
         if problems:
             failures += len(problems)
             print(f"  VERIFY FAILED ({len(problems)} problem(s)):")

@@ -20,9 +20,10 @@ more code shapes per semantic AST than the データ規模 table wants (it caps
 examples per semantic AST, not per style). Most of those points also differ
 only in ways that do not change the *shape* of the code (annotations and
 comments toggled on a snippet that is otherwise identical). ``STYLES`` is
-therefore a hand-picked spread of ~10 named styles that hits every value of
-every axis at least twice, keeps each style recognisable from its name, and
-leaves the axis constants public so a different catalogue can be assembled
+therefore a hand-picked set of 10 universal base shapes, each emitted with and
+without comments (20 styles that apply to every semantic AST), plus 3 gated
+styles; it hits every value of every axis at least twice, keeps each style
+recognisable from its name, and leaves the axis constants public so a different catalogue can be assembled
 without touching the generator.
 
 Tags ("タグに基づいて複数種類用意する")
@@ -41,7 +42,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Optional
 
@@ -157,61 +158,43 @@ class CodeStyle:
         return self.requires.satisfied_by(ast)
 
 
-# The catalogue. ``list_comprehension`` is first because it is the shape
-# homework.md's worked example shows, which makes it the natural "reference"
-# rendering (``codes[0]`` of a saved record).
-STYLES: tuple[CodeStyle, ...] = (
-    CodeStyle(
-        name="list_comprehension",
-        form=FORM_COMPREHENSION,
-        temporaries=TEMP_NONE,
-        names=NAMES_DEFAULT,
-        annotations=True,
-    ),
-    CodeStyle(
-        name="list_comprehension_bare",
-        form=FORM_COMPREHENSION,
-        temporaries=TEMP_NONE,
-        names=NAMES_TERSE,
-        annotations=False,
-    ),
-    CodeStyle(
-        name="comprehension_steps",
-        form=FORM_COMPREHENSION,
-        temporaries=TEMP_REUSED,
-        names=NAMES_DEFAULT,
-        annotations=True,
-    ),
-    CodeStyle(
-        name="comprehension_staged",
-        form=FORM_COMPREHENSION,
-        temporaries=TEMP_STAGED,
-        names=NAMES_VERBOSE,
-        annotations=False,
-        comments=True,
-    ),
-    CodeStyle(
-        name="for_loop",
-        form=FORM_LOOP,
-        temporaries=TEMP_REUSED,
-        names=NAMES_DEFAULT,
-        annotations=True,
-    ),
-    CodeStyle(
-        name="for_loop_commented",
-        form=FORM_LOOP,
-        temporaries=TEMP_REUSED,
-        names=NAMES_TERSE,
-        annotations=False,
-        comments=True,
-    ),
-    CodeStyle(
-        name="for_loop_staged",
-        form=FORM_LOOP,
-        temporaries=TEMP_STAGED,
-        names=NAMES_VERBOSE,
-        annotations=True,
-    ),
+# The universal base shapes: each is distinct from every other on *every*
+# semantic AST (tests/test_code_styles.py checks that over the whole
+# enumeration), and each is emitted twice -- without comments and with the
+# fixed category-level comments -- so every AST gets 2 x 10 = 20 renderings.
+# ``list_comprehension`` is first because it is the shape homework.md's worked
+# example shows, which makes it the natural "reference" rendering
+# (``codes[0]`` of a saved record).
+_BASES: tuple[CodeStyle, ...] = (
+    CodeStyle(name="list_comprehension", form=FORM_COMPREHENSION, temporaries=TEMP_NONE, names=NAMES_DEFAULT, annotations=True),
+    CodeStyle(name="list_comprehension_bare", form=FORM_COMPREHENSION, temporaries=TEMP_NONE, names=NAMES_TERSE, annotations=False),
+    CodeStyle(name="comprehension_steps", form=FORM_COMPREHENSION, temporaries=TEMP_REUSED, names=NAMES_DEFAULT, annotations=True),
+    CodeStyle(name="comprehension_steps_bare", form=FORM_COMPREHENSION, temporaries=TEMP_REUSED, names=NAMES_TERSE, annotations=False),
+    CodeStyle(name="comprehension_staged", form=FORM_COMPREHENSION, temporaries=TEMP_STAGED, names=NAMES_VERBOSE, annotations=False),
+    CodeStyle(name="comprehension_staged_typed", form=FORM_COMPREHENSION, temporaries=TEMP_STAGED, names=NAMES_DEFAULT, annotations=True),
+    CodeStyle(name="for_loop", form=FORM_LOOP, temporaries=TEMP_REUSED, names=NAMES_DEFAULT, annotations=True),
+    CodeStyle(name="for_loop_bare", form=FORM_LOOP, temporaries=TEMP_REUSED, names=NAMES_TERSE, annotations=False),
+    CodeStyle(name="for_loop_staged", form=FORM_LOOP, temporaries=TEMP_STAGED, names=NAMES_VERBOSE, annotations=True),
+    CodeStyle(name="for_loop_staged_bare", form=FORM_LOOP, temporaries=TEMP_STAGED, names=NAMES_TERSE, annotations=False),
+)
+
+COMMENTED_SUFFIX = "_commented"
+
+
+def _with_comments(styles: Sequence[CodeStyle]) -> tuple[CodeStyle, ...]:
+    """Each style followed by its twin that differs only in carrying the
+    comments (the コメントの有無 axis)."""
+    out: list[CodeStyle] = []
+    for style in styles:
+        out.append(style)
+        out.append(replace(style, name=style.name + COMMENTED_SUFFIX, comments=True))
+    return tuple(out)
+
+
+# Styles that are only distinct on some ASTs (see the tag gate above). They
+# come after the universal 20, so every AST has at least 20 renderings and
+# ASTs that exercise these features get a few more.
+_GATED: tuple[CodeStyle, ...] = (
     CodeStyle(
         name="condition_swapped",
         form=FORM_COMPREHENSION,
@@ -241,6 +224,9 @@ STYLES: tuple[CodeStyle, ...] = (
         requires=NEEDS_ORDER,
     ),
 )
+
+STYLES: tuple[CodeStyle, ...] = _with_comments(_BASES) + _GATED
+UNIVERSAL_STYLE_COUNT = 2 * len(_BASES)
 
 STYLES_BY_NAME: dict[str, CodeStyle] = {style.name: style for style in STYLES}
 

@@ -22,7 +22,7 @@ dataset exists.
 
 Usage:
     python semantic_ast/expressions_code/code_demo.py
-    python semantic_ast/expressions_code/code_demo.py --limit 0 --variants 0   # whole corpus, every style
+    python semantic_ast/expressions_code/code_demo.py --limit 0                 # whole corpus
     python semantic_ast/expressions_code/code_demo.py --sandbox 5             # also spot-check in Docker
 """
 
@@ -52,11 +52,12 @@ from code_styles import STYLES, styles_for  # noqa: E402
 from code_verifier import cross_check, ok, verify_variant  # noqa: E402
 from generator import enumerate_all  # noqa: E402
 from schema import SemanticAST, SemanticASTError  # noqa: E402
+from split import ALL_SPLITS  # noqa: E402
 from testcases import generate_test_cases  # noqa: E402
 
 # demo.py's splits and this script's corpus output both live in semantic_ast/out/.
 OUT_DIR = _HERE.parent / "out"
-SPLITS = ("train", "val", "test")
+SPLITS = ALL_SPLITS
 SAMPLES_JSONL = _HERE / "samples.jsonl"
 SAMPLES_MD = _HERE / "samples.md"
 SEED = 0
@@ -143,14 +144,14 @@ def _items_from_split(path: Path, limit: int) -> list[Item]:
     return out
 
 
-def _generate(items: list[Item], n_variants: int, extra_seed: Optional[int]) -> tuple[list[dict], list[str], Counter]:
+def _generate(items: list[Item], extra_seed: Optional[int]) -> tuple[list[dict], list[str], Counter]:
     """Render and verify every item; return (records, problems, style counts)."""
     records: list[dict] = []
     problems: list[str] = []
     style_counts: Counter = Counter()
 
     for spec_id, ast, tests in items:
-        generated = variants(ast, n=n_variants or None)
+        generated = variants(ast)
         if not generated:  # pragma: no cover - the catalogue always applies
             problems.append(f"{spec_id}: no applicable code style")
             continue
@@ -248,7 +249,6 @@ def _spot_check_sandbox(records: list[dict], count: int) -> list[str]:
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--limit", type=int, default=200, help="semantic ASTs per split, 0 for all (default: 200)")
-    parser.add_argument("--variants", type=int, default=3, help="code styles per semantic AST, 0 for every applicable style (default: 3)")
     parser.add_argument("--sample-limit", type=int, default=16, help="semantic ASTs in the committed gallery (default: 16)")
     parser.add_argument("--no-gallery", action="store_true", help="do not rewrite samples.jsonl / samples.md")
     parser.add_argument("--cross-check-seed", type=int, default=SEED + 1, help="seed for the extra random comparison against the reference interpreter (-1 to skip)")
@@ -264,7 +264,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     # -- the committed gallery ------------------------------------------------
     gallery_items = _sample_asts(args.sample_limit)
-    gallery_records, gallery_problems, gallery_styles = _generate(gallery_items, n_variants=0, extra_seed=extra_seed)
+    gallery_records, gallery_problems, gallery_styles = _generate(gallery_items, extra_seed=extra_seed)
     snippets = sum(len(r["codes"]) for r in gallery_records)
     print(f"\ngallery: {len(gallery_records)} semantic ASTs -> {snippets} snippets")
     print(f"  styles used: {dict(sorted(gallery_styles.items()))}")
@@ -290,7 +290,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     # -- the corpus -----------------------------------------------------------
     sources: list[tuple[str, list[Item]]] = []
     for split in SPLITS:
-        path = args.out_dir / f"{split}.jsonl"
+        path = args.out_dir / f"ast_{split}.jsonl"
         if path.exists():
             sources.append((split, _items_from_split(path, args.limit)))
     if not sources:
@@ -298,7 +298,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 1 if failures else 0
 
     for split, items in sources:
-        records, problems, style_counts = _generate(items, args.variants, extra_seed)
+        records, problems, style_counts = _generate(items, extra_seed)
         path = save_codes(records, args.out_dir / f"code_{split}.jsonl")
         snippets = sum(len(r["codes"]) for r in records)
         distinct = len({entry["code_sha256"] for r in records for entry in r["codes"]})

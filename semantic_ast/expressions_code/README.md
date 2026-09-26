@@ -43,7 +43,7 @@ python -m unittest discover -s semantic_ast/tests -v
 
 「一時変数の有無」と「1行の`return`と複数行形式」は実際には同じ軸になる（一時変数を使わないことが1行`return`を可能にしている）ので1つにまとめ、代わりに`staged`（段ごとに別名の変数を置く）を加えて3値にしている。
 
-全軸の直積は288通りになるが、`homework.md`のデータ規模表が上限を設けているのは**意味ASTあたりの例数**であってスタイル数ではないし、288通りの大半は形が同じで注釈・コメントだけが違う。そこで**名前付きスタイル10種のカタログ**（`STYLES`）を手で選んである。各軸の各値が最低2回は現れ、名前から形が分かり、軸の定数は公開したままなので別のカタログを組むこともできる。スタイル名がそのまま`homework.md`のデータレコードの`code_style`になる。
+全軸の直積は288通りになるが、`homework.md`のデータ規模表が上限を設けているのは**意味ASTあたりの例数**であってスタイル数ではないし、288通りの大半は形が同じで注釈・コメントだけが違う。そこで**名前付きスタイルのカタログ**（`STYLES`）を手で選んである。中身は、どの意味ASTでも別物になる10種の基本形に、コメントなし／ありの2通り（`_commented`が付く方が固定のカテゴリ別コメント入り）を掛けた**20種**と、下記タグで出し分ける3種である。したがって**どの意味ASTからも最低20種類**のコードができる（タグに該当すれば21〜23種類）。各軸の各値が最低2回は現れ、名前から形が分かり、軸の定数は公開したままなので別のカタログを組むこともできる。スタイル名がそのまま`homework.md`のデータレコードの`code_style`になる。
 
 ### タグによる出し分け
 
@@ -101,8 +101,8 @@ for variant in variants(ast, n=3):   # タグで絞ったうえで回転して3�
 ## 4. 一気通貫（`code_demo.py`）
 
 ```bash
-python semantic_ast/expressions_code/code_demo.py                    # 各split 200件、1意味ASTあたり3スタイル
-python semantic_ast/expressions_code/code_demo.py --limit 0 --variants 0   # 全件、適用可能な全スタイル
+python semantic_ast/expressions_code/code_demo.py                    # 各split 200件、各意味ASTに適用可能な全スタイル
+python semantic_ast/expressions_code/code_demo.py --limit 0          # 全件
 python semantic_ast/expressions_code/code_demo.py --sandbox 5        # Dockerでの抜き取り検査つき
 ```
 

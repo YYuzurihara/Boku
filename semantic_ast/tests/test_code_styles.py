@@ -101,6 +101,20 @@ class TagGateTest(unittest.TestCase):
             self.assertTrue(ungated <= {style.name for style in styles_for(ast)})
 
 
+class TwentyRenderingsTest(unittest.TestCase):
+    def test_every_semantic_ast_has_at_least_twenty_distinct_renderings(self):
+        from code_generator import variants  # noqa: PLC0415
+
+        for ast in enumerate_all()[::7]:
+            self.assertGreaterEqual(len(variants(ast)), 20, ast.to_dict())
+
+    def test_every_commented_style_twins_an_uncommented_one(self):
+        for style in STYLES:
+            if style.name.endswith("_commented") and style.name != "for_loop_explicit_reverse":
+                base = STYLES_BY_NAME[style.name.removesuffix("_commented")]
+                self.assertTrue(style.comments and not base.comments, style.name)
+
+
 class SelectStylesTest(unittest.TestCase):
     def test_selection_is_deterministic_and_bounded(self):
         ast = SemanticAST(filters=("even", "ge_k"), order_op="descending")

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import random
 from collections import defaultdict
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 from generator import label as default_label_fn
@@ -61,6 +61,35 @@ def _label_key(ast: SemanticAST, label_fn: LabelFn) -> tuple:
     return tuple(sorted(d.items()))
 
 
+def _partition(
+    asts: Sequence[SemanticAST],
+    fractions: Mapping[str, float],
+    remainder: str,
+    seed: int,
+    label_fn: LabelFn,
+) -> dict[str, list[SemanticAST]]:
+    """Split every ``label_fn`` group into ``fractions`` (name -> share of the
+    group, taken in mapping order); whatever is left goes to ``remainder``.
+    Shared by ``stratified_split`` and ``build_eval_splits``."""
+    groups: dict[tuple, list[SemanticAST]] = defaultdict(list)
+    for ast in asts:
+        groups[_label_key(ast, label_fn)].append(ast)
+
+    out: dict[str, list[SemanticAST]] = {name: [] for name in (remainder, *fractions)}
+    for key, group in groups.items():
+        rng = random.Random(repr((seed, key)))
+        shuffled = list(group)
+        rng.shuffle(shuffled)
+        start = len(shuffled)
+        # carve from the tail so the remainder keeps the head of the shuffle
+        for name, share in reversed(list(fractions.items())):
+            n = min(round(len(shuffled) * share), start)
+            start -= n
+            out[name].extend(shuffled[start : start + n])
+        out[remainder].extend(shuffled[:start])
+    return out
+
+
 def stratified_split(
     asts: Sequence[SemanticAST],
     ratios: SplitRatios = SplitRatios(),
@@ -75,25 +104,9 @@ def stratified_split(
     makes leakage structurally hard to introduce later, per this module's
     docstring.
     """
-    groups: dict[tuple, list[SemanticAST]] = defaultdict(list)
-    for ast in asts:
-        groups[_label_key(ast, label_fn)].append(ast)
-
-    splits: dict[str, list[SemanticAST]] = {"train": [], "val": [], "test": []}
-    for key, group in groups.items():
-        rng = random.Random(repr((seed, key)))
-        shuffled = list(group)
-        rng.shuffle(shuffled)
-        n = len(shuffled)
-        n_val = round(n * ratios.val)
-        n_test = round(n * ratios.test)
-        n_val = min(n_val, n)
-        n_test = min(n_test, n - n_val)
-        n_train = n - n_val - n_test
-        splits["train"].extend(shuffled[:n_train])
-        splits["val"].extend(shuffled[n_train : n_train + n_val])
-        splits["test"].extend(shuffled[n_train + n_val :])
-    return splits
+    return _partition(
+        asts, {"val": ratios.val, "test": ratios.test}, "train", seed, label_fn
+    )
 
 
 def check_no_leakage(splits: dict[str, list[SemanticAST]]) -> None:
@@ -137,3 +150,105 @@ def cap_per_label(
         rng = random.Random(repr((seed, key)))
         out.extend(rng.sample(group, max_per_label))
     return out
+
+
+# ---------------------------------------------------------------------------
+# homework.md's four test sets
+# ---------------------------------------------------------------------------
+
+TRAIN_SPLITS: tuple[str, ...] = ("train", "val", "test")
+PARAPHRASE_SPLIT = "test_paraphrase"
+COMPOSITIONAL_SPLIT = "test_compositional"
+BOUNDARY_SPLIT = "test_boundary"
+ALL_SPLITS: tuple[str, ...] = (*TRAIN_SPLITS, PARAPHRASE_SPLIT, COMPOSITIONAL_SPLIT, BOUNDARY_SPLIT)
+
+# Pairs of atomic operations (``SemanticAST.op_tags`` spelling) that never
+# occur together in train/val/test/paraphrase/boundary: every AST containing
+# both goes to ``test_compositional``. Each operation still occurs elsewhere
+# in train, so the test asks whether the model can combine two skills it has
+# only seen apart -- homework.md's example is 偶数抽出 x 降順整列. All four are
+# cross-category and each holds back roughly 500-800 of the 40,589 ASTs.
+HOLDOUT_PAIRS: tuple[tuple[str, str], ...] = (
+    ("filter:even", "order:descending"),
+    ("filter:positive", "order:reverse"),
+    ("map:abs", "order:ascending"),
+    ("order:ascending", "slice:take_last_k"),
+)
+
+
+@dataclass(frozen=True)
+class EvalRatios:
+    """Share of the (non-compositional) pool given to each extra test set.
+    ``train``/``val``/``test`` are then split 80/10/10 from what remains."""
+
+    paraphrase: float = 0.05
+    boundary: float = 0.05
+
+
+def matches_holdout(ast: SemanticAST, pairs: Sequence[tuple[str, str]] = HOLDOUT_PAIRS) -> bool:
+    tags = set(ast.op_tags())
+    return any(a in tags and b in tags for a, b in pairs)
+
+
+def check_holdout_pairs(
+    splits: Mapping[str, Sequence[SemanticAST]],
+    pairs: Sequence[tuple[str, str]] = HOLDOUT_PAIRS,
+) -> None:
+    """Raise ``LeakageError`` unless (a) no held-out pair occurs outside
+    ``test_compositional``, and (b) every operation of every pair occurs in
+    ``train`` on its own -- otherwise the test would measure an operation the
+    model never saw rather than the combination."""
+    for name, group in splits.items():
+        if name == COMPOSITIONAL_SPLIT:
+            continue
+        for ast in group:
+            if matches_holdout(ast, pairs):
+                raise LeakageError(f"{name!r} holds a held-out operation pair: {ast.to_dict()}")
+    train_tags = {tag for ast in splits["train"] for tag in ast.op_tags()}
+    for a, b in pairs:
+        for tag in (a, b):
+            if tag not in train_tags:
+                raise LeakageError(f"held-out pair ({a}, {b}): {tag} never occurs in train")
+    for ast in splits[COMPOSITIONAL_SPLIT]:
+        if not matches_holdout(ast, pairs):
+            raise LeakageError(f"{COMPOSITIONAL_SPLIT!r} holds an AST with no held-out pair: {ast.to_dict()}")
+
+
+def build_eval_splits(
+    asts: Sequence[SemanticAST],
+    ratios: SplitRatios = SplitRatios(),
+    eval_ratios: EvalRatios = EvalRatios(),
+    holdout_pairs: Sequence[tuple[str, str]] = HOLDOUT_PAIRS,
+    seed: int = 0,
+    label_fn: LabelFn = default_label_fn,
+) -> dict[str, list[SemanticAST]]:
+    """Six disjoint groups of semantic ASTs (``ALL_SPLITS``):
+
+    * ``test_compositional`` -- every AST containing a held-out operation pair;
+    * ``test_paraphrase`` / ``test_boundary`` -- stratified slices of the rest.
+      Their ASTs are rendered with the reserved Japanese templates
+      (``ja_generator.template_pools``) and tested with boundary inputs
+      (``testcases.generate_boundary_test_cases``) respectively;
+    * ``train`` / ``val`` / ``test`` -- what remains, split by ``ratios``;
+      ``test`` is the 通常テスト (same operations, unseen ASTs and inputs).
+
+    Dedup first, so the groups are disjoint by hash; ``check_no_leakage`` and
+    ``check_holdout_pairs`` are run before returning.
+    """
+    pool = dedup_by_hash(asts)
+    held = [ast for ast in pool if matches_holdout(ast, holdout_pairs)]
+    rest = [ast for ast in pool if not matches_holdout(ast, holdout_pairs)]
+
+    extras = _partition(
+        rest,
+        {PARAPHRASE_SPLIT: eval_ratios.paraphrase, BOUNDARY_SPLIT: eval_ratios.boundary},
+        "main",
+        seed,
+        label_fn,
+    )
+    main = stratified_split(extras.pop("main"), ratios, seed=seed, label_fn=label_fn)
+    splits = {**main, **extras, COMPOSITIONAL_SPLIT: held}
+    splits = {name: splits[name] for name in ALL_SPLITS}
+    check_no_leakage(splits)
+    check_holdout_pairs(splits, holdout_pairs)
+    return splits

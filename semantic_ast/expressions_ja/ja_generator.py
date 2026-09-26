@@ -49,7 +49,7 @@ from __future__ import annotations
 import json
 import random
 import sys
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Union
@@ -121,19 +121,31 @@ class Rendering:
         return {"text": self.text, "choices": [c.to_dict() for c in self.choices]}
 
 
+# key -> the expression indices a rendering may draw from; a key that is not
+# listed may use any of its expressions.
+AllowedIndices = Mapping[str, Sequence[int]]
+
+
 class _Picker:
     """Samples one expression per key and records what it picked."""
 
-    def __init__(self, dictionary: ExpressionDictionary, rng: random.Random) -> None:
+    def __init__(
+        self,
+        dictionary: ExpressionDictionary,
+        rng: random.Random,
+        allowed: Optional[AllowedIndices] = None,
+    ) -> None:
         self.dictionary = dictionary
         self.rng = rng
+        self.allowed = allowed or {}
         self.choices: list[ExpressionChoice] = []
 
     def _pick(self, key: str) -> tuple[object, int]:
         expressions = self.dictionary.expressions(key)  # raises if key absent
         if not expressions:
             raise JaRenderError(f"expression dictionary entry {key!r} has no expressions")
-        index = self.rng.randrange(len(expressions))
+        indices = self.allowed.get(key)
+        index = self.rng.choice(indices) if indices else self.rng.randrange(len(expressions))
         return expressions[index], index
 
     def text(self, key: str) -> str:
@@ -227,11 +239,15 @@ def _assemble(opening: str, clauses: Sequence[str], closing: str) -> str:
 
 
 def render(
-    ast: SemanticAST, dictionary: ExpressionDictionary, rng: Optional[random.Random] = None
+    ast: SemanticAST,
+    dictionary: ExpressionDictionary,
+    rng: Optional[random.Random] = None,
+    allowed: Optional[AllowedIndices] = None,
 ) -> Rendering:
-    """Render one Japanese instruction for ``ast`` by sampling the dictionary."""
+    """Render one Japanese instruction for ``ast`` by sampling the dictionary
+    (restricted to ``allowed`` indices per key, if given)."""
     rng = rng or random.Random()
-    picker = _Picker(dictionary, rng)
+    picker = _Picker(dictionary, rng, allowed)
 
     categories = ast.active_categories()  # already in pipeline order
     if not categories:  # pragma: no cover - schema forbids it
@@ -260,6 +276,7 @@ def render_variants(
     n: int = 1,
     seed: int = 0,
     max_attempts: Optional[int] = None,
+    allowed: Optional[AllowedIndices] = None,
 ) -> list[Rendering]:
     """Up to ``n`` *distinct* instructions for one semantic AST.
 
@@ -275,12 +292,68 @@ def render_variants(
     for _ in range(attempts):
         if len(out) >= n:
             break
-        rendering = render(ast, dictionary, rng)
+        rendering = render(ast, dictionary, rng, allowed)
         if rendering.text in seen:
             continue
         seen.add(rendering.text)
         out.append(rendering)
     return out
+
+
+# ---------------------------------------------------------------------------
+# 言い換えテスト: templates reserved away from training
+# ---------------------------------------------------------------------------
+
+PARAPHRASE_RATIO = 0.25
+
+
+@dataclass(frozen=True)
+class TemplatePools:
+    """How each dictionary key's expressions are divided between the training
+    splits and the 言い換えテスト (ja_generator_plan.md section 3).
+
+    ``train`` and ``paraphrase`` map a key to the indices it may use in the
+    respective splits. A key with a single expression cannot be divided; it is
+    absent from both mappings (so both may use it) and listed in
+    ``shared_keys`` so a report can say how much of the sentence is genuinely
+    new."""
+
+    train: dict[str, tuple[int, ...]]
+    paraphrase: dict[str, tuple[int, ...]]
+    shared_keys: tuple[str, ...]
+
+
+def template_pools(
+    dictionary: ExpressionDictionary, ratio: float = PARAPHRASE_RATIO, seed: int = 0
+) -> TemplatePools:
+    """Reserve ``ratio`` of every key's expressions (at least one, never all)
+    for the paraphrase test. The choice is a seeded shuffle of the indices,
+    so it does not depend on the order the human reviewer left them in."""
+    train: dict[str, tuple[int, ...]] = {}
+    paraphrase: dict[str, tuple[int, ...]] = {}
+    shared: list[str] = []
+    for key in dictionary.keys():
+        n = len(dictionary.expressions(key))
+        if n < 2:
+            shared.append(key)
+            continue
+        indices = list(range(n))
+        random.Random(repr((seed, key))).shuffle(indices)
+        n_reserved = min(max(1, round(n * ratio)), n - 1)
+        paraphrase[key] = tuple(sorted(indices[:n_reserved]))
+        train[key] = tuple(sorted(indices[n_reserved:]))
+    return TemplatePools(train=train, paraphrase=paraphrase, shared_keys=tuple(shared))
+
+
+def pool_violations(rendering_choices: Iterable[Mapping], pool: AllowedIndices) -> list[str]:
+    """Choices (as stored in a record's ``renderings``) that fall outside
+    ``pool`` -- the check that a saved training sentence never used a reserved
+    template and a paraphrase sentence used nothing but reserved ones."""
+    return [
+        f"{c['key']}[{c['index']}]"
+        for c in rendering_choices
+        if c["key"] in pool and c["index"] not in pool[c["key"]]
+    ]
 
 
 def leftover_placeholders(text: str) -> list[str]:

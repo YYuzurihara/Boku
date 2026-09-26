@@ -27,11 +27,13 @@ from ja_generator import (  # noqa: E402
     instruction_record,
     leftover_placeholders,
     load_instructions,
+    pool_violations,
     render,
     render_from_record,
     render_variants,
     save_instructions,
     seed_for,
+    template_pools,
 )
 from schema import SemanticAST  # noqa: E402
 
@@ -267,6 +269,51 @@ class Variants(unittest.TestCase):
         b = SemanticAST(order_op="descending")
         self.assertNotEqual(seed_for(a), seed_for(b))
         self.assertEqual(seed_for(a), seed_for(SemanticAST(order_op="ascending")))
+
+
+class ParaphrasePools(unittest.TestCase):
+    def setUp(self):
+        self.dictionary = fixture_dictionary(extra_variants=True)  # two expressions per key
+        self.pools = template_pools(self.dictionary)
+
+    def test_every_divisible_key_is_split_into_disjoint_non_empty_pools(self):
+        for key in self.dictionary.keys():
+            train, para = set(self.pools.train[key]), set(self.pools.paraphrase[key])
+            self.assertTrue(train and para, key)
+            self.assertFalse(train & para, key)
+            self.assertEqual(train | para, set(range(len(self.dictionary.expressions(key)))))
+
+    def test_a_single_expression_key_is_shared_and_reported(self):
+        pools = template_pools(fixture_dictionary())
+        self.assertEqual(set(pools.shared_keys), set(fixture_dictionary().keys()))
+        self.assertEqual(pools.train, {})
+
+    def test_training_renderings_never_use_a_reserved_template(self):
+        for ast in enumerate_all()[:200]:
+            for r in render_variants(ast, self.dictionary, n=4, seed=0, allowed=self.pools.train):
+                self.assertEqual(pool_violations([c.to_dict() for c in r.choices], self.pools.train), [])
+                self.assertNotEqual(pool_violations([c.to_dict() for c in r.choices], self.pools.paraphrase), [])
+
+    def test_paraphrase_renderings_use_only_reserved_templates(self):
+        for ast in enumerate_all()[:200]:
+            for r in render_variants(ast, self.dictionary, n=4, seed=0, allowed=self.pools.paraphrase):
+                self.assertEqual(pool_violations([c.to_dict() for c in r.choices], self.pools.paraphrase), [])
+
+    def test_no_sentence_is_shared_between_the_two_pools(self):
+        ast = SemanticAST(filters=("even",), map_ops=(("add_k", None),), order_op="ascending")
+        train = {r.text for r in render_variants(ast, self.dictionary, n=50, seed=0, allowed=self.pools.train)}
+        para = {r.text for r in render_variants(ast, self.dictionary, n=50, seed=0, allowed=self.pools.paraphrase)}
+        self.assertTrue(train and para)
+        self.assertFalse(train & para)
+
+    def test_pools_are_deterministic(self):
+        self.assertEqual(self.pools, template_pools(self.dictionary))
+
+    def test_restricted_renderings_still_replay_from_their_choices(self):
+        ast = SemanticAST(filters=("even",), order_op="ascending")
+        for r in render_variants(ast, self.dictionary, n=3, seed=0, allowed=self.pools.paraphrase):
+            record = instruction_record(ast, [r], self.dictionary)
+            self.assertEqual(render_from_record(record, self.dictionary), [r.text])
 
 
 class MissingEntries(unittest.TestCase):

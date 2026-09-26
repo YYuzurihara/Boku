@@ -70,3 +70,76 @@ def generate_test_cases(
             seen.add(key)
             unique_cases.append(case)
     return unique_cases
+
+
+# ---------------------------------------------------------------------------
+# 境界値テスト (homework.md): a dedicated suite of edge-case inputs only
+# ---------------------------------------------------------------------------
+
+# Candidate inputs for "every element fails the filter": one list rarely
+# fails every predicate (e.g. ``ge_k`` and ``lt_k`` are complements), so the
+# suite picks whichever candidates the AST's own filters reject entirely.
+_REJECT_ALL_CANDIDATES: tuple[list[int], ...] = (
+    [1, 3, 5, 7, 9],
+    [2, 4, 6, 8],
+    [-1, -3, -7],
+    [-2, -4, -8],
+    [0, 0, 0],
+    [1, 2, 3],
+    [100, 99, 98],
+    [-100, -99, -98],
+    [11, 13, 17],
+    [ELEMENT_MAX, ELEMENT_MAX],
+    [ELEMENT_MIN, ELEMENT_MIN],
+)
+
+
+def _rejects_everything(ast: SemanticAST, xs: list[int], k: int) -> bool:
+    return bool(ast.filters) and not interpret(SemanticAST(filters=ast.filters), xs, k)
+
+
+def generate_boundary_test_cases(ast: SemanticAST, seed: int = 0) -> list[TestCase]:
+    """Boundary-only suite: empty list, one element (zero / positive /
+    negative), all elements equal, negatives only, mixed signs, extreme
+    magnitudes, max length, and -- when the AST has a filter -- lists the
+    filter rejects entirely, each with the smallest and largest ``k``.
+    Deterministic given ``seed``; ``expected`` comes from the reference
+    interpreter."""
+    rng = random.Random(seed)
+    mid = (K_MIN + K_MAX) // 2
+    inputs: list[list[int]] = [
+        [],
+        [0],
+        [rng.randint(1, ELEMENT_MAX)],
+        [rng.randint(ELEMENT_MIN, -1)],
+        [7] * 8,
+        [-7] * 8,
+        [0] * 5,
+        [-1, -2, -3, -4, -5],
+        list(range(-5, 6)),
+        [ELEMENT_MIN, ELEMENT_MAX] * 5,
+        list(range(XS_MAX_LEN)),
+        [rng.randint(ELEMENT_MIN, ELEMENT_MAX) for _ in range(XS_MAX_LEN)],
+    ]
+    cases: list[tuple[list[int], int]] = [(xs, k) for xs in inputs for k in (K_MIN, mid, K_MAX)]
+
+    for xs in _REJECT_ALL_CANDIDATES:
+        for k in (K_MIN, mid, K_MAX):
+            if _rejects_everything(ast, xs, k):
+                cases.append((xs, k))
+                break
+
+    seen: set[tuple[tuple[int, ...], int]] = set()
+    out: list[TestCase] = []
+    for xs, k in cases:
+        key = (tuple(xs), k)
+        if key not in seen:
+            seen.add(key)
+            out.append(_make_case(ast, xs, k))
+    return out
+
+
+def has_reject_all_case(ast: SemanticAST, cases: list[TestCase]) -> bool:
+    """True if some case's filtered list is empty (only meaningful for ASTs
+    with a filter)."""
+    return any(_rejects_everything(ast, c["xs"], c["k"]) for c in cases)
