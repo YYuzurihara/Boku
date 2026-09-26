@@ -47,7 +47,7 @@ pairs = sample_pairs(n_per_ast=5, seed=0)  # 既定で instructions_train.jsonl 
 
 - **byte fallback**: `initial_alphabet=pre_tokenizers.ByteLevel.alphabet()`で256バイト全てを初期語彙に含め、`models.BPE(unk_token=None)`でUNKトークン自体を作らない。どんなUnicode文字（学習データに一度も出てこなかった文字や絵文字を含む）もバイト列に分解して表現でき、`decode`で元のテキストに完全に戻る。
 - **特殊トークン**: `SPECIAL_TOKENS = ("<|pad|>", "<|bos|>", "<|eos|>", "<|task|>", "<|code|>", "<|explanation|>")`。BPEのマージ対象にはならず、常に1トークンとしてエンコードされる。
-- **語彙数**: `train_from_texts(..., vocab_size=8192)`が既定（`homework.md`のBoku-nano仕様に合わせた値）。実際に学習される語彙数はコーパスサイズによって`vocab_size`未満で頭打ちになることがある（マージできるペアが尽きた場合）。
+- **語彙数**: `train_from_texts(..., vocab_size=2048)`が既定（実験の結果2048で十分だったため）。実際に学習される語彙数はコーパスサイズによって`vocab_size`未満で頭打ちになることがある（マージできるペアが尽きた場合）。
 
 ```python
 from sampling import sample_pairs
@@ -55,7 +55,7 @@ from train_tokenizer import pair_to_text, train_from_texts, save
 
 pairs = sample_pairs(n_per_ast=5, seed=0)
 texts = [pair_to_text(p.instruction_ja, p.code) for p in pairs]
-tokenizer = train_from_texts(texts, vocab_size=8192)
+tokenizer = train_from_texts(texts, vocab_size=2048)
 save(tokenizer, "tokenizer/out/tokenizer.json")
 ```
 
@@ -63,7 +63,7 @@ save(tokenizer, "tokenizer/out/tokenizer.json")
 
 ```bash
 python tokenizer/demo.py
-python tokenizer/demo.py --n-per-ast 5 --vocab-size 8192 --seed 0
+python tokenizer/demo.py --n-per-ast 5 --vocab-size 2048 --seed 0
 ```
 
 サンプリング件数、コーパス文字数、学習後の語彙数、特殊トークンのID、1レコードのエンコード例とbyte-fallbackのラウンドトリップ確認を表示し、`tokenizer/out/tokenizer.json`（生成物、`.gitignore`済み）に保存する。

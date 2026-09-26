@@ -71,7 +71,7 @@ def build_trainer(vocab_size: int, special_tokens: Sequence[str] = SPECIAL_TOKEN
 
 def train_from_texts(
     texts: Iterable[str],
-    vocab_size: int = 8192,
+    vocab_size: int = 2048,
     special_tokens: Sequence[str] = SPECIAL_TOKENS,
 ) -> Tokenizer:
     """Train a byte-level BPE tokenizer on ``texts`` (Japanese and code mixed

@@ -8,7 +8,7 @@
 
 Usage:
     python tokenizer/demo.py
-    python tokenizer/demo.py --percent 5 --vocab-size 8192
+    python tokenizer/demo.py --percent 5 --vocab-size 2048
 """
 
 from __future__ import annotations

@@ -30,8 +30,8 @@ def _record(i: int, **verification_overrides) -> dict:
     return {
         "spec_id": f"train-{i:06d}",
         "semantic_hash": f"h{i}",
-        "instruction_ja": f"ja-{i}",
-        "codes": {"code": f"code-{i}\n", "verification": verification},
+        "instruction_ja": [f"ja-{i}"],
+        "codes": [{"code": f"code-{i}\n", "verification": verification}],
     }
 
 
@@ -83,7 +83,7 @@ class SamplePairsTest(unittest.TestCase):
 
     def test_missing_cross_check_key_is_accepted(self) -> None:
         r = _record(0)
-        del r["codes"]["verification"]["cross_check_ok"]
+        del r["codes"][0]["verification"]["cross_check_ok"]
         self._write([r])
         self.assertEqual(len(sample_pairs(self.path, percent=100)), 1)
 

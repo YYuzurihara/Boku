@@ -2,7 +2,8 @@
 ``data/train.jsonl``.
 
 homework.md (トークナイザ節): 「訓練データだけを用いて、BPEまたはUnigramトークナイザを作成する」。
-``data/train.jsonl`` は1行 = 1レコード（``instruction_ja`` 1件 + ``codes`` 1件）で、
+``data/train.jsonl`` は1行 = 1意味AST（``instruction_ja`` と ``codes`` は同じ長さのリストで、
+i番目同士が対）で、
 train splitのみを含む。そこから全体の ``percent`` % をレコード単位で一様に
 （非復元で）取り出す。val/testのファイルはこのモジュールに登場しない。
 """
@@ -69,14 +70,15 @@ def sample_pairs(
                 continue
             if index in chosen:
                 record = json.loads(line)
-                if _code_is_verified(record["codes"]):
-                    pairs.append(
-                        Pair(
-                            spec_id=record["spec_id"],
-                            semantic_hash=record.get("semantic_hash", ""),
-                            instruction_ja=record["instruction_ja"],
-                            code=record["codes"]["code"],
+                for instruction_ja, entry in zip(record["instruction_ja"], record["codes"], strict=True):
+                    if _code_is_verified(entry):
+                        pairs.append(
+                            Pair(
+                                spec_id=record["spec_id"],
+                                semantic_hash=record.get("semantic_hash", ""),
+                                instruction_ja=instruction_ja,
+                                code=entry["code"],
+                            )
                         )
-                    )
             index += 1
     return pairs
