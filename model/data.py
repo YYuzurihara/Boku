@@ -72,7 +72,8 @@ def load_tokenized(jsonl: Path, tok_path: Path, cache_dir: Path, max_len: int, b
     with jsonl.open(encoding="utf-8") as f:
         for line in f:
             r = json.loads(line)
-            buf.append(pair_to_text(r["instruction_ja"], r["codes"]["code"]))
+            for instruction_ja, entry in zip(r["instruction_ja"], r["codes"], strict=True):
+                buf.append(pair_to_text(instruction_ja, entry["code"]))
             if len(buf) >= batch:
                 flush(buf)
                 buf = []

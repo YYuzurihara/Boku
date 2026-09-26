@@ -14,7 +14,7 @@ tie_embeddings = true
 
 [train]
 seed = 0
-max_lr = 3e-4
+max_lr = 1e-4
 min_lr_ratio = 0.1
 warmup_ratio = 0.03
 weight_decay = 0.1
@@ -23,7 +23,7 @@ betas = [0.9, 0.95]
 seq_len = 256              # 学習時の最大系列長(これを超える例は捨てる)
 micro_batch_size = 64
 grad_accum_steps = 2       # global batch ≈ 64*2*平均長。tokens/stepはログに出る
-total_tokens = 300_000_000 # 学習中に見る延べトークン数(パディングを除く)
+total_tokens = 150_000_000 # 学習中に見る延べトークン数(パディングを除く)。train.jsonl 1epoch=52,429,878なので約2.86epoch
 eval_interval = 200
 eval_batches = 50
 checkpoint_interval = 500
