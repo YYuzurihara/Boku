@@ -1,8 +1,9 @@
 """意味ASTベースの最終コーパス生成。
 
-train/val/testそれぞれについて、``ast_{split}.jsonl`` の意味AST（`spec_id`）を
+各split（train/val と3種のテスト集合 test_paraphrase / test_compositional /
+test_boundary）について、``ast_{split}.jsonl`` の意味AST（`spec_id`）を
 1行ずつ取り出し、その意味ASTに紐づく生成コード全件に、日本語表現を1件ずつ
-対応させて **1レコード** として ``data/{train,val,test}.jsonl`` に書き出す。
+対応させて **1レコード** として ``data/{split}.jsonl`` に書き出す。
 コードがN件あれば日本語表現もN件割り当て、``codes[i]`` と ``instruction_ja[i]``
 が対（i番目同士）になる。コードの件数は意味ASTごとに異なりうる（適用できる
 コードスタイルの数による）。
@@ -18,19 +19,21 @@ train/val/testそれぞれについて、``ast_{split}.jsonl`` の意味AST（`s
 
 ``ast_{split}.jsonl`` のすべての意味ASTについて、日本語表現・生成コードが
 揃っている必要がある（欠けていればエラーで止める）。日本語表現の件数はコードの
-件数以下でなければならない。表現辞書が小さい意味AST（特に訓練で使わなかった表現だけで
-組み立てる ``test_paraphrase``）は異なる文がコード件数に満たないことがあり、その場合は
-日本語表現を先頭から繰り返してコード件数に合わせる（繰り返したレコード数は実行時に表示）。
+件数以下でなければならない。異なる文がコード件数に満たない意味ASTがあれば、日本語表現を
+先頭から繰り返してコード件数に合わせる（繰り返したレコード数は実行時に表示）。現在の
+表現辞書では全14,424件がコード件数以上の異なる文を持てるので、この補完は発火しない
+（足りなくなるとしたら辞書を削ったときなので、表示された件数は辞書を見直す合図になる）。
 
 1つの意味ASTに紐づく日本語表現の言い換えとコードのスタイル違いは同じsplitに
 まとめる。意味ASTを分割した後で言い換えやコード変換を行うことで
-train/val/testにまたがる表記違いの混入（データ漏洩）を避ける、という
+splitにまたがる表記違いの混入（データ漏洩）を避ける、という
 ``semantic_ast`` パッケージ全体の方針（`semantic_ast/README.md`）をここでも踏襲している。
 
 再現性のため、出力の各行には必ず ``semantic_ast`` / ``semantic_hash`` を含める。
 
 使い方:
-    python data/corpus_generator.py
+    python data/corpus_generator.py                          # 全split
+    python data/corpus_generator.py --splits test_boundary   # 指定したsplitだけ
 """
 
 from __future__ import annotations
@@ -42,7 +45,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Optional
 
-SPLITS = ("train", "val", "test", "test_paraphrase", "test_compositional", "test_boundary")
+SPLITS = ("train", "val", "test_paraphrase", "test_compositional", "test_boundary")
 
 _HERE = Path(__file__).resolve().parent
 SRC_DIR = _HERE.parent / "semantic_ast" / "out"
@@ -131,9 +134,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--src-dir", type=Path, default=SRC_DIR, help="semantic_ast/out/ の場所")
     parser.add_argument("--out-dir", type=Path, default=OUT_DIR, help="出力先ディレクトリ (default: data/)")
+    parser.add_argument("--splits", nargs="+", choices=SPLITS, default=list(SPLITS), help="対象のsplit (default: 全部)")
     args = parser.parse_args(argv)
 
-    for split in SPLITS:
+    for split in args.splits:
         path = args.out_dir / f"{split}.jsonl"
         n_specs, n_pairs = build_split_corpus(split, src_dir=args.src_dir, out_path=path)
         print(f"{split}: {n_specs}件の意味AST（レコード） / {n_pairs}組の(日本語, コード) -> {path}")

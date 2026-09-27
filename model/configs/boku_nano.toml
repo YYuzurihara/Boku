@@ -7,7 +7,7 @@ n_layers = 8
 n_heads = 6
 n_kv_heads = 6      # 6 = MHA。GQAにしたい場合は約数(例: 2)にする
 d_ff = 1024
-max_seq_len = 512
+max_seq_len = 256
 rope_theta = 10000.0
 norm_eps = 1e-5
 tie_embeddings = true
@@ -23,7 +23,7 @@ betas = [0.9, 0.95]
 seq_len = 256              # 学習時の最大系列長(これを超える例は捨てる)
 micro_batch_size = 64
 grad_accum_steps = 2       # global batch ≈ 64*2*平均長。tokens/stepはログに出る
-total_tokens = 150_000_000 # 学習中に見る延べトークン数(パディングを除く)。train.jsonl 1epoch=52,429,878なので約2.86epoch
+total_tokens = 100_000_000 # 学習中に見る延べトークン数(パディングを除く、命令部分含む)。train.jsonl 1epoch=61,981,071（うち損失計算対象の<|code|>以降は41,611,406）なので約1.61epoch（損失対象トークンは約67.1M）
 eval_interval = 200
 eval_batches = 50
 checkpoint_interval = 500

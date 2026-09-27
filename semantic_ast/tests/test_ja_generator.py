@@ -8,6 +8,7 @@ Run with: python -m unittest discover -s semantic_ast/tests
 from __future__ import annotations
 
 import random
+import re
 import sys
 import tempfile
 import unittest
@@ -21,8 +22,13 @@ from generator import enumerate_all  # noqa: E402
 from ja_dictionary import ExpressionDictionary  # noqa: E402
 from ja_fixture import fixture_dictionary  # noqa: E402
 from ja_generator import (  # noqa: E402
+    GOAL_FIRST,
+    ORDINAL,
+    PROCEDURE,
+    SEQUENTIAL,
+    TEMPLATES,
     JaRenderError,
-    adnominal_order,
+    applicable_templates,
     contract_problems,
     instruction_record,
     leftover_placeholders,
@@ -37,9 +43,13 @@ from ja_generator import (  # noqa: E402
 )
 from schema import SemanticAST  # noqa: E402
 
+A = SemanticAST.of
+
 
 def text_of(ast: SemanticAST, dictionary: ExpressionDictionary) -> str:
-    return render(ast, dictionary, random.Random(0)).text
+    """The sequential type -- the composition rules of ja_generator_plan.md
+    section 2, which the tests below check rule by rule."""
+    return render(ast, dictionary, random.Random(0), templates=(SEQUENTIAL,)).text
 
 
 def _replacing(dictionary: ExpressionDictionary, key: str, expressions: list) -> ExpressionDictionary:
@@ -57,84 +67,76 @@ class CompositionRules(unittest.TestCase):
         cls.d = fixture_dictionary()
 
     def test_worked_example_from_the_plan(self):
-        # ja_generator_plan.md 2.6, verbatim
-        ast = SemanticAST(
-            filters=("ge_k", "even"),
-            map_ops=(("add_k", None), ("mul_const", 2)),
-            order_op="ascending",
-        )
+        # ja_generator_plan.md 2.6 in 3 ops
+        ast = A("filter:ge_k", "map:mul_const:2", "order:ascending")
         self.assertEqual(
             text_of(ast, self.d),
-            "整数のリストxsについて、k以上の偶数の要素だけを残し、kを加えてから2倍して、昇順に並べるsolve関数を書いてください。",
+            "整数のリストxsについて、k以上の要素だけを残し、2倍して、昇順に並べるsolve関数を書いてください。",
         )
 
-    def test_single_filter_uses_the_terminal_frame_when_it_is_the_only_category(self):
-        ast = SemanticAST(filters=("even",))
+    def test_single_filter_uses_the_terminal_frame_when_it_is_the_only_op(self):
+        ast = A("filter:even")
         self.assertEqual(
             text_of(ast, self.d), "整数のリストxsについて、偶数の要素だけを残すsolve関数を書いてください。"
         )
 
-    def test_two_filters_are_concatenated_into_one_fragment(self):
-        ast = SemanticAST(filters=("ge_k", "even"))
-        self.assertIn("k以上の偶数の要素だけを残す", text_of(ast, self.d))
+    def test_consecutive_filters_are_separate_clauses_in_op_order(self):
+        """Stacking them into one 連体修飾 would impose the modifiers' natural
+        reading order and hide the op order."""
+        self.assertEqual(
+            text_of(A("filter:even", "filter:gt_k"), self.d),
+            "整数のリストxsについて、偶数の要素だけを残し、kより大きい要素だけを残すsolve関数を書いてください。",
+        )
+        self.assertEqual(
+            text_of(A("filter:gt_k", "filter:even"), self.d),
+            "整数のリストxsについて、kより大きい要素だけを残し、偶数の要素だけを残すsolve関数を書いてください。",
+        )
 
-    def test_stacked_filters_read_in_a_fixed_order_whatever_the_ast_says(self):
-        # AND is commutative, so the AST's order carries no meaning -- but
-        # 連体修飾 stack in a fixed order in Japanese: 「偶数のk以上の要素」 is
-        # what generator.py's enumeration order would otherwise produce
-        for filters in (("ge_k", "even"), ("even", "ge_k")):
-            self.assertIn("k以上の偶数の要素", text_of(SemanticAST(filters=filters), self.d), filters)
+    def test_consecutive_maps_chain_with_kara(self):
+        self.assertIn("kを加えてから2倍して、", text_of(A("map:add_k", "map:mul_const:2", "order:ascending"), self.d))
+        self.assertIn("2倍してからkを加える", text_of(A("order:ascending", "map:mul_const:2", "map:add_k"), self.d))
 
-    def test_adnominal_order_puts_the_classifying_predicate_next_to_the_noun(self):
-        self.assertEqual(adnominal_order(("even", "gt_k")), ("gt_k", "even"))
-        self.assertEqual(adnominal_order(("even", "positive")), ("positive", "even"))
-        self.assertEqual(adnominal_order(("multiple_of_k", "le_k")), ("le_k", "multiple_of_k"))
-        self.assertEqual(adnominal_order(("odd",)), ("odd",))
+    def test_maps_separated_by_another_op_do_not_chain(self):
+        text = text_of(A("map:add_k", "order:reverse", "map:add_k"), self.d)
+        self.assertNotIn("から", text.removeprefix("整数のリストxsについて、"))
+        self.assertEqual(text.count("kを加え"), 2)
 
-    def test_last_category_uses_terminal_and_earlier_ones_use_te(self):
-        ast = SemanticAST(map_ops=(("abs", None),), order_op="descending")
+    def test_last_op_uses_terminal_and_earlier_ones_use_te(self):
+        ast = A("map:abs", "order:descending")
         text = text_of(ast, self.d)
         self.assertIn("絶対値を取って", text)  # te: not the last category
         self.assertIn("降順に並べる", text)  # terminal: last category
         self.assertNotIn("絶対値を取る", text)
 
-    def test_chain_inserts_the_kara_connective(self):
-        ast = SemanticAST(map_ops=(("add_k", None), ("square", None)))
-        self.assertIn("kを加えてから二乗する", text_of(ast, self.d))
-
-    def test_chain_keeps_the_semantic_ast_order(self):
-        forward = SemanticAST(slice_ops=("take_first_k", "step_2"))
-        backward = SemanticAST(slice_ops=("step_2", "take_first_k"))
-        self.assertIn("先頭からk個を取り出してから1個おきに取り出す", text_of(forward, self.d))
-        self.assertIn("1個おきに取り出してから先頭からk個を取り出す", text_of(backward, self.d))
-
     def test_mul_const_substitutes_its_constant_for_N(self):
         for const in (2, 3):
-            ast = SemanticAST(map_ops=(("mul_const", const),))
+            ast = A(f"map:mul_const:{const}")
             text = text_of(ast, self.d)
             self.assertIn(f"{const}倍する", text)
             self.assertNotIn("N倍", text)
 
     def test_k_stays_a_literal_k(self):
-        ast = SemanticAST(filters=("ge_k",), slice_ops=("take_last_k",))
+        ast = A("filter:ge_k", "slice:take_last_k")
         self.assertIn("k以上の", text_of(ast, self.d))
         self.assertIn("末尾からk個", text_of(ast, self.d))
 
-    def test_categories_appear_in_pipeline_order(self):
-        ast = SemanticAST(filters=("odd",), map_ops=(("negate", None),), slice_ops=("step_2",))
-        text = text_of(ast, self.d)
+    def test_ops_appear_in_op_order(self):
+        text = text_of(A("filter:odd", "map:negate", "slice:step_2"), self.d)
         self.assertLess(text.index("奇数の"), text.index("符号を反転"))
         self.assertLess(text.index("符号を反転"), text.index("1個おきに"))
+        text = text_of(A("slice:step_2", "map:negate", "filter:odd"), self.d)
+        self.assertLess(text.index("1個おきに"), text.index("符号を反転"))
+        self.assertLess(text.index("符号を反転"), text.index("奇数の"))
 
     def test_opening_and_closing_frames_wrap_the_sentence(self):
-        ast = SemanticAST(order_op="reverse")
+        ast = A("order:reverse")
         text = text_of(ast, self.d)
         self.assertTrue(text.startswith("整数のリストxsについて、"))
         self.assertTrue(text.endswith("solve関数を書いてください。"))
 
     def test_clause_separator_is_not_doubled(self):
         # frame:opening already ends with 、 and the generator adds one too
-        ast = SemanticAST(filters=("even",), order_op="ascending")
+        ast = A("filter:even", "order:ascending")
         self.assertNotIn("、、", text_of(ast, self.d))
 
     def test_no_comma_between_the_last_clause_and_the_noun_it_modifies(self):
@@ -145,7 +147,7 @@ class CompositionRules(unittest.TestCase):
             "order:ascending",
             [{"terminal": "昇順に並べる、", "te": "昇順に並べて"}],
         )
-        text = text_of(SemanticAST(order_op="ascending"), dictionary)
+        text = text_of(A("order:ascending"), dictionary)
         self.assertIn("昇順に並べるsolve関数", text)
 
 
@@ -222,7 +224,7 @@ class Contract(unittest.TestCase):
         self.assertIn("絶対値にしますから", problems[0])
 
     def test_order_te_forms_are_not_held_to_the_chain_rule(self):
-        # order never chains (schema.py allows a single op), so its te form
+        # order ops never chain (each is a clause of its own), so its te form
         # only ever meets a 読点 -- 連用形 without て is fine there
         self.assertEqual(
             self._problems("order:reverse", [{"terminal": "並びを逆にする", "te": "並びを逆にし"}]), []
@@ -253,7 +255,7 @@ class Contract(unittest.TestCase):
 
 class Variants(unittest.TestCase):
     def test_variants_are_distinct_and_reproducible(self):
-        ast = SemanticAST(filters=("even",), map_ops=(("add_k", None),))
+        ast = A("filter:even", "map:add_k")
         dictionary = fixture_dictionary(extra_variants=True)
         first = [r.text for r in render_variants(ast, dictionary, n=4, seed=0)]
         second = [r.text for r in render_variants(ast, dictionary, n=4, seed=0)]
@@ -261,14 +263,14 @@ class Variants(unittest.TestCase):
         self.assertEqual(len(set(first)), len(first))
 
     def test_a_one_expression_dictionary_yields_exactly_one_variant(self):
-        ast = SemanticAST(order_op="ascending")
+        ast = A("order:ascending")
         self.assertEqual(len(render_variants(ast, fixture_dictionary(), n=5, seed=0)), 1)
 
     def test_seed_is_derived_from_the_semantic_hash(self):
-        a = SemanticAST(order_op="ascending")
-        b = SemanticAST(order_op="descending")
+        a = A("order:ascending")
+        b = A("order:descending")
         self.assertNotEqual(seed_for(a), seed_for(b))
-        self.assertEqual(seed_for(a), seed_for(SemanticAST(order_op="ascending")))
+        self.assertEqual(seed_for(a), seed_for(A("order:ascending")))
 
 
 class ParaphrasePools(unittest.TestCase):
@@ -278,10 +280,22 @@ class ParaphrasePools(unittest.TestCase):
 
     def test_every_divisible_key_is_split_into_disjoint_non_empty_pools(self):
         for key in self.dictionary.keys():
+            if key in self.pools.shared_keys:
+                continue
             train, para = set(self.pools.train[key]), set(self.pools.paraphrase[key])
             self.assertTrue(train and para, key)
             self.assertFalse(train & para, key)
             self.assertEqual(train | para, set(range(len(self.dictionary.expressions(key)))))
+
+    def test_frame_keys_are_shared_by_every_split(self):
+        # the 言い換え is in the operation wording; reserving a quarter of the
+        # frames only divides down how many sentences a split can spell
+        frames = [k for k in self.dictionary.keys() if k.startswith("frame:")]
+        self.assertTrue(frames)
+        for key in frames:
+            self.assertIn(key, self.pools.shared_keys)
+            self.assertNotIn(key, self.pools.train)
+            self.assertNotIn(key, self.pools.paraphrase)
 
     def test_a_single_expression_key_is_shared_and_reported(self):
         pools = template_pools(fixture_dictionary())
@@ -300,7 +314,7 @@ class ParaphrasePools(unittest.TestCase):
                 self.assertEqual(pool_violations([c.to_dict() for c in r.choices], self.pools.paraphrase), [])
 
     def test_no_sentence_is_shared_between_the_two_pools(self):
-        ast = SemanticAST(filters=("even",), map_ops=(("add_k", None),), order_op="ascending")
+        ast = A("filter:even", "map:add_k", "order:ascending")
         train = {r.text for r in render_variants(ast, self.dictionary, n=50, seed=0, allowed=self.pools.train)}
         para = {r.text for r in render_variants(ast, self.dictionary, n=50, seed=0, allowed=self.pools.paraphrase)}
         self.assertTrue(train and para)
@@ -310,7 +324,7 @@ class ParaphrasePools(unittest.TestCase):
         self.assertEqual(self.pools, template_pools(self.dictionary))
 
     def test_restricted_renderings_still_replay_from_their_choices(self):
-        ast = SemanticAST(filters=("even",), order_op="ascending")
+        ast = A("filter:even", "order:ascending")
         for r in render_variants(ast, self.dictionary, n=3, seed=0, allowed=self.pools.paraphrase):
             record = instruction_record(ast, [r], self.dictionary)
             self.assertEqual(render_from_record(record, self.dictionary), [r.text])
@@ -320,14 +334,100 @@ class MissingEntries(unittest.TestCase):
     def test_missing_key_raises_with_the_key_named(self):
         dictionary = ExpressionDictionary.from_expressions({"filter:even": ["偶数の"]})
         with self.assertRaises(Exception) as ctx:
-            render(SemanticAST(filters=("even",)), dictionary, random.Random(0))
+            render(A("filter:even"), dictionary, random.Random(0))
         self.assertIn("frame:", str(ctx.exception))
 
     def test_empty_expression_list_raises(self):
         entries = dict(fixture_dictionary().entries)
         entries["order:ascending"] = {"slot_type": "ACTION_PAIR", "expressions": []}
         with self.assertRaises(JaRenderError):
-            render(SemanticAST(order_op="ascending"), ExpressionDictionary(entries), random.Random(0))
+            render(A("order:ascending"), ExpressionDictionary(entries), random.Random(0))
+
+
+class SentenceTypes(unittest.TestCase):
+    """The sentence types (ja_generator's module docstring). The fixture
+    dictionary has one expression per key, so the only variance left is the
+    glue."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.d = fixture_dictionary()
+        cls.fixed = A("filter:positive", "map:negate", "order:ascending")
+
+    def _text(self, ast, template, seed=0):
+        return render(ast, self.d, random.Random(seed), templates=(template,)).text
+
+    def test_ordinal_marks_every_unit_in_order(self):
+        text = self._text(self.fixed, ORDINAL)
+        self.assertRegex(text, r"^整数のリストxsについて、(まず|最初に|はじめに)正の要素だけを残し、")
+        self.assertRegex(text, r"(最後に|最終的に)昇順に並べるsolve関数を書いてください。$")
+        self.assertLess(text.index("正の"), text.index("符号を反転"))
+        self.assertLess(text.index("符号を反転"), text.index("昇順"))
+
+    def test_procedure_puts_one_step_per_sentence(self):
+        for seed in range(6):
+            text = self._text(self.fixed, PROCEDURE, seed)
+            head, _, steps = text.partition("solve関数を書いてください。")
+            self.assertRegex(head, r"(次の手順で処理する|以下の手順で処理する|次の順に処理を行う)$")
+            self.assertEqual(steps.count("。"), 3, text)
+            self.assertTrue(
+                steps.startswith("(1) 正の要素だけを残す。") or re.match(r"(まず|最初に|はじめに)、正", steps), text
+            )
+
+    def test_goal_first_reads_the_last_step_first_and_marks_it_with_mae_ni(self):
+        text = self._text(self.fixed, GOAL_FIRST)
+        self.assertTrue(text.startswith("整数のリストxsについて、昇順に並べるsolve関数を書いてください。"), text)
+        self.assertRegex(text, r"(ただし|その際)、昇順に並べる前に、正の要素だけを残し、符号を反転する(こと。|ようにしてください。)$")
+
+    def test_unit_types_need_two_units(self):
+        self.assertEqual(applicable_templates(A("order:reverse")), (SEQUENTIAL,))
+        self.assertEqual(applicable_templates(A("order:reverse", "slice:step_2")), TEMPLATES)
+        self.assertEqual(applicable_templates(A("map:add_k", "map:add_k")), TEMPLATES)
+        with self.assertRaises(JaRenderError):
+            self._text(A("order:reverse"), ORDINAL)
+
+    def test_every_type_tells_the_ops_in_op_order(self):
+        for tags in (("filter:even", "slice:take_first_k"), ("slice:take_first_k", "filter:even")):
+            first, second = ("偶数の", "先頭から") if tags[0] == "filter:even" else ("先頭から", "偶数の")
+            for template in TEMPLATES:
+                for seed in range(4):
+                    text = self._text(A(*tags), template, seed)
+                    if template == GOAL_FIRST:
+                        # the last op is read first, and 「前に」 restores the order
+                        self.assertRegex(text, f"{second}[^。]*前に、{first}", (template, text))
+                    else:
+                        self.assertLess(text.index(first), text.index(second), (template, text))
+
+    def test_a_reordered_ast_never_gets_the_same_sentence(self):
+        """Even ops that commute (filter and sort) are told in the AST's order,
+        so the two orders are two different instructions."""
+        dictionary = fixture_dictionary(extra_variants=True)
+        a, b = A("filter:even", "order:ascending"), A("order:ascending", "filter:even")
+        texts_a = {r.text for r in render_variants(a, dictionary, n=40, seed=0)}
+        texts_b = {r.text for r in render_variants(b, dictionary, n=40, seed=0)}
+        self.assertTrue(texts_a and texts_b)
+        self.assertFalse(texts_a & texts_b)
+
+    def test_narration_is_the_ast_order(self):
+        for seed in range(10):
+            self.assertEqual(render(self.fixed, self.d, random.Random(seed)).narration, self.fixed.tags())
+
+    def test_every_type_renders_and_replays(self):
+        dictionary = fixture_dictionary(extra_variants=True)
+        rng = random.Random(0)
+        used = set()
+        for ast in rng.sample(enumerate_all(), 300):
+            renderings = render_variants(ast, dictionary, n=6, seed=0)
+            record = instruction_record(ast, renderings, dictionary)
+            self.assertEqual(render_from_record(record, dictionary), record["instruction_ja"])
+            for rendering in renderings:
+                used.add(rendering.template)
+                text = rendering.text
+                self.assertEqual(leftover_placeholders(text), [], text)
+                self.assertTrue(text.endswith("。"), text)
+                for broken in ("、、", "。。", "、。", "{"):
+                    self.assertNotIn(broken, text)
+        self.assertEqual(used, set(TEMPLATES))
 
 
 class Saving(unittest.TestCase):
@@ -336,9 +436,9 @@ class Saving(unittest.TestCase):
         self.path = Path(self.tmp.name) / "instructions.jsonl"
         self.dictionary = fixture_dictionary(extra_variants=True)
         self.asts = [
-            SemanticAST(filters=("ge_k", "even"), map_ops=(("add_k", None), ("mul_const", 2)), order_op="ascending"),
-            SemanticAST(order_op="reverse"),
-            SemanticAST(map_ops=(("square", None),), slice_ops=("step_2", "take_last_k")),
+            A("filter:ge_k", "map:mul_const:2", "order:ascending"),
+            A("order:reverse"),
+            A("map:square", "slice:take_last_k", "map:square"),
         ]
 
     def tearDown(self):

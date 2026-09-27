@@ -133,13 +133,19 @@ class BokuModel(nn.Module):
         return logits, loss
 
     @torch.no_grad()
-    def generate(self, input_ids: torch.Tensor, max_new_tokens: int, eos_id: int) -> torch.Tensor:
-        """temperature 0 (greedy)。KVキャッシュなしの単純実装(短い系列前提)。"""
+    def generate(self, input_ids: torch.Tensor, max_new_tokens: int, eos_id: int, temperature: float = 0.0) -> torch.Tensor:
+        """temperature 0 (既定, greedy) か、>0ならtemperatureサンプリング (pass@k用)。
+        KVキャッシュなしの単純実装(短い系列前提)。"""
         for _ in range(max_new_tokens):
             if input_ids.size(1) >= self.cfg.max_seq_len:
                 break
             logits, _ = self(input_ids)
-            nxt = logits[:, -1].argmax(-1, keepdim=True)
+            last = logits[:, -1]
+            if temperature > 0:
+                probs = F.softmax(last.float() / temperature, dim=-1)
+                nxt = torch.multinomial(probs, num_samples=1)
+            else:
+                nxt = last.argmax(-1, keepdim=True)
             input_ids = torch.cat([input_ids, nxt], dim=1)
             if (nxt == eos_id).all():
                 break

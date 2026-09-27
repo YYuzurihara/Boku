@@ -15,7 +15,7 @@ only trustworthy if the exact same sentence can be rebuilt from the saved
 (dictionary, choices) pair, so every record is replayed after being read
 back and any mismatch is reported as a failure.
 
-Input semantic ASTs come from ``out/{train,val,test}.jsonl`` when demo.py
+Input semantic ASTs come from ``out/ast_{split}.jsonl`` when demo.py
 has been run; otherwise a small deterministic sample is enumerated on the
 spot, so this script is useful before the full dataset exists.
 
@@ -80,13 +80,12 @@ def _code_counts(path: Path) -> dict[str, int]:
 
 def _sample_asts(limit: int) -> list[tuple[str, SemanticAST]]:
     """A deterministic spread of semantic ASTs, used when out/*.jsonl is
-    absent: the first AST of each distinct (num_categories, category tuple)
-    shape, so every composition rule in ja_generator_plan.md section 2 gets
-    exercised (single category, chains, filter+map+order, ...)."""
+    absent: the first AST of each distinct category sequence, so every
+    composition rule in ja_generator_plan.md section 2 gets exercised (single
+    op, map / slice chains, repeated filters, ...)."""
     by_shape: dict[tuple, SemanticAST] = {}
     for ast in enumerate_all():
-        shape = (ast.active_categories(), len(ast.filters), len(ast.map_ops), len(ast.slice_ops))
-        by_shape.setdefault(shape, ast)
+        by_shape.setdefault(ast.categories(), ast)
     chosen = list(by_shape.values())[:limit]
     return [(f"sample-{i:06d}", ast) for i, ast in enumerate(chosen)]
 
@@ -101,7 +100,7 @@ def _asts_from_split(path: Path, limit: int) -> list[tuple[str, SemanticAST]]:
             try:
                 ast = SemanticAST.from_dict(record["semantic_ast"])
             except SemanticASTError as exc:
-                # e.g. a file written before schema.py narrowed the vocabulary
+                # e.g. a file written before schema.py switched to the op-sequence format
                 raise SystemExit(
                     f"{path} holds a semantic AST the current schema rejects "
                     f"({record.get('spec_id')}: {exc}).\n"
@@ -139,6 +138,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--limit", type=int, default=0, help="semantic ASTs per split, 0 for all (default: 0)")
     parser.add_argument("--variants", type=int, default=0, help=f"Japanese variants per semantic AST; 0 = as many as the AST has codes in code_{{split}}.jsonl, else {FALLBACK_VARIANTS} (default: 0)")
     parser.add_argument("--show", type=int, default=5, help="example sentences to print per split")
+    parser.add_argument("--splits", nargs="+", choices=SPLITS, default=list(SPLITS), help="splits to process (default: all)")
     parser.add_argument("--out-dir", type=Path, default=OUT_DIR)
     args = parser.parse_args(argv)
 
@@ -166,7 +166,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("    (full list: python semantic_ast/expressions_ja/ja_teacher.py --report-contract)")
 
     sources: list[tuple[str, list[tuple[str, SemanticAST]]]] = []
-    for split in SPLITS:
+    for split in args.splits:
         path = args.out_dir / f"ast_{split}.jsonl"
         if path.exists():
             sources.append((split, _asts_from_split(path, args.limit)))
@@ -184,16 +184,28 @@ def main(argv: Optional[list[str]] = None) -> int:
     for split, items in sources:
         pool = pools.paraphrase if split == PARAPHRASE_SPLIT else pools.train
         records = []
+        short: list[tuple[str, int, int]] = []
         code_counts = _code_counts(args.out_dir / f"code_{split}.jsonl") if not args.variants else {}
         for spec_id, ast in items:
             n = args.variants or code_counts.get(spec_id, FALLBACK_VARIANTS)
             renderings = render_variants(ast, dictionary, n=n, seed=SEED, allowed=pool)
+            if len(renderings) < n:
+                # render_variants returns what it found: fewer sentences than
+                # the AST has codes means the pair-up is not 1:1 any more.
+                short.append((spec_id, n, len(renderings)))
             records.append(instruction_record(ast, renderings, dictionary, spec_id=spec_id, seed=SEED))
 
         path = save_instructions(records, args.out_dir / f"instructions_{split}.jsonl")
         total = sum(len(r["instruction_ja"]) for r in records)
         distinct = len({text for r in records for text in r["instruction_ja"]})
         print(f"\n{split}: {len(records)} semantic ASTs -> {total} instructions ({distinct} distinct) -> {path}")
+
+        if short:
+            failures += len(short)
+            print(f"  FEWER SENTENCES THAN CODES for {len(short)} semantic AST(s) "
+                  f"(the dictionary cannot spell that many distinct instructions):")
+            for spec_id, wanted, got in short[:10]:
+                print(f"    - {spec_id}: {got} of {wanted}")
 
         for record in records[: args.show]:
             print(f"  {json.dumps(record['semantic_ast'], ensure_ascii=False)}")

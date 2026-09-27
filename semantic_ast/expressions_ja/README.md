@@ -12,7 +12,8 @@ semantic_ast/expressions_ja/
   ja_generator.py       意味AST→日本語指示文の結合（ja_generator_plan.md 2章）と、結合結果の保存
   ja_demo.py            表現辞書→結合→保存→読み戻し→再現性検証を一気通貫で実行
 
-  candidates.json       表現辞書本体（ja_teacher.pyの出力、人間チェックの対象）
+  candidates.json       表現辞書本体（ja_teacher.pyの出力、人間チェックの対象。生の教師モデル出力のまま）
+  filtered.json         candidates.jsonを人手で編集した辞書。ja_demo.pyのデフォルト入力
   generation_log.jsonl  生成ログ（1プリミティブ1行）
 ```
 
@@ -79,17 +80,32 @@ from ja_generator import render_variants, instruction_record, save_instructions
 from schema import SemanticAST
 
 d = ExpressionDictionary.load("semantic_ast/expressions_ja/candidates.json")
-ast = SemanticAST(filters=("ge_k", "even"), map_ops=(("add_k", None), ("mul_const", 2)), order_op="ascending")
+ast = SemanticAST.of("filter:ge_k", "map:mul_const:2", "order:ascending")
 renderings = render_variants(ast, d, n=3, seed=0)
-# 辞書が ja_generator_plan.md 2.6 の例どおりの表現を持つ場合の出力:
-# 「整数のリストxsについて、k以上の偶数の要素だけを残し、kを加えてから2倍して、昇順に並べるsolve関数を書いてください。」
+# 辞書が ja_generator_plan.md 2.6 の例どおりの表現を持つ場合の出力（連用連接型）:
+# 「整数のリストxsについて、k以上の要素だけを残し、2倍して、昇順に並べるsolve関数を書いてください。」
 # 実際の文面は辞書の中身しだいなので、変な表現は人間チェックで辞書側を直す（生成器やプロンプトはいじらない）。
 save_instructions([instruction_record(ast, renderings, d, spec_id="train-000000")], "out/instructions_train.jsonl")
 ```
 
-結合規則は`ja_generator_plan.md`2章そのまま（filter→map→order→sliceの順、最後のアクティブカテゴリだけ終止形、チェインは`te形+から`、`{frag}`と`N`の置換）。`ja_generator_plan.md`5章の未確定事項だった読点の扱いは、**生成器側で一律に「、」を付与する**（表現辞書側の末尾「、」は重複しないよう1つだけ剥がす）方に決めた。最後の節と結びの間だけは「、」を入れない——ここは連体修飾（「昇順に並べる」+「solve関数を…」）なので、読点を挟むと修飾先の名詞から切り離されてしまう。
+結合規則は`ja_generator_plan.md`2章に沿う（**操作列の順に**節を並べ、最後の節だけ終止形、`{frag}`と`N`の置換）。意味ASTは原子操作1〜3個の列（重複可・順序あり、`../README.md`）なので、次のように読む:
 
-複数filterの連体修飾フラグメントの**並び順は生成器が決める**（`ADNOMINAL_GROUP_ORDER` = k比較→符号→倍数→偶奇）。ANDは可換なので意味ASTの順序には意味がない一方、日本語の連体修飾を重ねる順序には意味があり（「k以上の偶数の要素」は自然、「偶数のk以上の要素」は不自然）、`generator.py`の列挙順は後者になってしまうため。
+- 抽出は**1操作1節**（「偶数の要素だけを残し、kより大きい要素だけを残す」）。連続する抽出を1つの連体修飾に重ねる（「kより大きい偶数の要素」）と、日本語の自然な修飾順が操作順を上書きして、順序違いの2つの意味ASTが同じ文になってしまうため、重ねない。
+- 変換・切り出しが**連続**するときは`te形+から`のチェインにする（「kを加えてから2倍して、」）。間に別の操作が挟まればチェインにしない。
+- 並べ替えは1操作1節。`ja_generator_plan.md`5章の未確定事項だった読点の扱いは、**生成器側で一律に「、」を付与する**（表現辞書側の末尾「、」は重複しないよう1つだけ剥がす）方に決めた。最後の節と結びの間だけは「、」を入れない——ここは連体修飾（「昇順に並べる」+「solve関数を…」）なので、読点を挟むと修飾先の名詞から切り離されてしまう。
+
+**語り順は常に操作列の順**: 順序が違えば別の意味AST・別のコードなので、同じ関数を計算する並べ方（抽出とソートの入れ替えなど）であっても、意味ASTと違う順序では語らない。語ると、その文は順序違いの別の意味ASTの指示文になってしまう。
+
+**文型**: 節の位置がそのまま実行順になる1種類の文型だけだと「文中の位置＝順序」という偏りを学習してしまうので、1件ごとに文型（`TEMPLATES`）を選ぶ（`choices`に記録され、`render_from_record`で再現される）。どの文型も操作の順序を明示する:
+
+| 文型 | 形 | 例 |
+|---|---|---|
+| `sequential` 連用連接型 | A-te、B-te、C-terminal + closing（従来） | …偶数の要素だけを残し、2倍して、昇順に並べるsolve関数を書いてください。 |
+| `ordinal` 順序副詞型 | まずA-te、次にB-te、最後にC-terminal + closing | …まず偶数の要素だけを残し、次に2倍して、最後に昇順に並べるsolve関数を… |
+| `procedure` 手順列挙型 | 「次の手順で処理する」+ closing + 1単位1文 | …次の手順で処理するsolve関数を書いてください。まず、偶数の要素だけを残す。次に、2倍する。最後に、昇順に並べる。（`(1) … (2) …`の番号形式もある） |
+| `goal_first` 後段先行型 | 最後の単位を先に述べ、「前に」で残りを補う | …昇順に並べるsolve関数を書いてください。ただし、昇順に並べる前に、偶数の要素だけを残し、2倍すること。 |
+
+`ordinal`/`procedure`/`goal_first`は**単位**（原子操作1つ）ごとに語るので、チェインは「まずkを加えて、次に2倍して」と分解され、単位が2つ以上ある意味ASTにだけ使う。文型が足す接続語（`GLUE`: まず/次に/最後に、前に、こと 等）は「から」と同じく生成器側の固定語で、教師モデルには問い合わせない。これらは結合契約が保証する`terminal`（終止形＝連体形なので「前に」「こと」「。」やclosingの名詞に付く）と`te`（「、」に付く）にしか付かないため、契約を満たす辞書はどの文型でも破綻しない。`render(..., templates=(...))`で文型を固定できる。
 
 **結合契約（`contract_problems`）**: 教師モデルは原子表現しか書かないので、「節と節が繋がらない」種類の問題は結合側の責任になる。そこで結合規則が前提にしていることを`contract_problems(dictionary)`が明文化し、機械的に判定できる分だけ検査する——連体修飾フラグメントが名詞や「だけ」で終わっていないか（終わっていると`…要素要素だけを残す`になる）、`terminal`が名詞で終わっていないか（結びの名詞句が直後に来る）、map/sliceの`te`が「から」を付けられる形か、`frame:opening`が後続カテゴリに依存しない中立形か、`frame:closing`が`solve`を含み「。」で終わるか。検査するのは**壊れる**ものだけで、「言い回しが下手」「`solve`を実行しろと言っている」のような判断は入れない（そこは`THIRD_PARTY.md`のプロンプトと人間チェックの担当）。違反は修正せず一覧するだけ。
 
@@ -101,9 +117,8 @@ save_instructions([instruction_record(ast, renderings, d, spec_id="train-000000"
 python semantic_ast/expressions_ja/ja_demo.py --variants 3
 ```
 
-表現辞書を読む→`semantic_ast/out/{train,val,test}.jsonl`の意味ASTに対して結合→`semantic_ast/out/instructions_{split}.jsonl`に保存→読み戻して1件ずつ再生成し、保存された文と一致するかを検証する（`demo.py`未実行なら代わりに構成パターン網羅のサンプルを列挙して使う）。
+表現辞書を読む→`semantic_ast/out/ast_{split}.jsonl`の意味ASTに対して結合→`semantic_ast/out/instructions_{split}.jsonl`に保存→読み戻して1件ずつ再生成し、保存された文と一致するかを検証する（`demo.py`未実行なら代わりに構成パターン網羅のサンプルを列挙して使う）。
 
 ## このディレクトリが担っていないこと
 
-- 生成された表現の人間によるチェック・承認（`candidates.json`を確認して`approved.json`にするフロー。`ja_demo.py --dictionary`で承認済み辞書に差し替えられる）
 - 意味ASTに基づくコードの構造的変換（`../expressions_code/`の担当）

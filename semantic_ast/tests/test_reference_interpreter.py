@@ -14,25 +14,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from reference_interpreter import interpret  # noqa: E402
 from schema import SemanticAST  # noqa: E402
 
+A = SemanticAST.of
+
 
 class InterpretMatchesHomeworkExample(unittest.TestCase):
     def test_worked_example(self):
-        # "整数リストxsからk以上の偶数だけを残し、それぞれを2倍して昇順に並べる"
-        ast = SemanticAST(filters=("even", "ge_k"), map_ops=(("mul_const", 2),), order_op="ascending")
+        # homework.md's "k以上の偶数だけを残し、それぞれを2倍して昇順に並べる"
+        # has four ops; its first three are one AST of at most 3 ops
+        ast = A("filter:ge_k", "filter:even", "map:mul_const:2")
         xs = [1, 5, 2, 8, -4, 10, 3]
         k = 3
-        self.assertEqual(
-            interpret(ast, xs, k),
-            sorted([x * 2 for x in xs if x >= k and x % 2 == 0]),
-        )
+        self.assertEqual(interpret(ast, xs, k), [x * 2 for x in xs if x >= k and x % 2 == 0])
 
 
 class InterpretDoesNotMutateInput(unittest.TestCase):
     def test_pure(self):
-        ast = SemanticAST(order_op="ascending")
         xs = [3, 1, 2]
         original = list(xs)
-        interpret(ast, xs, 1)
+        interpret(A("order:ascending", "order:reverse"), xs, 1)
         self.assertEqual(xs, original)
 
 
@@ -41,97 +40,88 @@ class InterpretFilters(unittest.TestCase):
         self.xs = [-4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 9, 10]
         self.k = 4
 
-    def test_even_odd(self):
-        self.assertEqual(interpret(SemanticAST(filters=("even",)), self.xs, self.k), [x for x in self.xs if x % 2 == 0])
-        self.assertEqual(interpret(SemanticAST(filters=("odd",)), self.xs, self.k), [x for x in self.xs if x % 2 != 0])
+    def check(self, name, pred):
+        self.assertEqual(interpret(A(f"filter:{name}"), self.xs, self.k), [x for x in self.xs if pred(x)], name)
 
-    def test_k_compare(self):
+    def test_every_filter(self):
         k = self.k
-        self.assertEqual(interpret(SemanticAST(filters=("gt_k",)), self.xs, k), [x for x in self.xs if x > k])
-        self.assertEqual(interpret(SemanticAST(filters=("ge_k",)), self.xs, k), [x for x in self.xs if x >= k])
-        self.assertEqual(interpret(SemanticAST(filters=("lt_k",)), self.xs, k), [x for x in self.xs if x < k])
-        self.assertEqual(interpret(SemanticAST(filters=("le_k",)), self.xs, k), [x for x in self.xs if x <= k])
-
-    def test_multiple_of_k(self):
-        k = self.k
-        self.assertEqual(
-            interpret(SemanticAST(filters=("multiple_of_k",)), self.xs, k),
-            [x for x in self.xs if x % k == 0],
-        )
-
-    def test_sign(self):
-        self.assertEqual(interpret(SemanticAST(filters=("positive",)), self.xs, self.k), [x for x in self.xs if x > 0])
-        self.assertEqual(interpret(SemanticAST(filters=("negative",)), self.xs, self.k), [x for x in self.xs if x < 0])
-        self.assertEqual(interpret(SemanticAST(filters=("zero",)), self.xs, self.k), [x for x in self.xs if x == 0])
+        self.check("even", lambda x: x % 2 == 0)
+        self.check("odd", lambda x: x % 2 != 0)
+        self.check("gt_k", lambda x: x > k)
+        self.check("ge_k", lambda x: x >= k)
+        self.check("lt_k", lambda x: x < k)
+        self.check("le_k", lambda x: x <= k)
+        self.check("multiple_of_k", lambda x: x % k == 0)
+        self.check("positive", lambda x: x > 0)
+        self.check("negative", lambda x: x < 0)
+        self.check("zero", lambda x: x == 0)
 
 
 class InterpretMapOps(unittest.TestCase):
-    def setUp(self):
-        self.xs = [-3, -1, 0, 2, 5]
-        self.k = 4
-
-    def test_arithmetic(self):
-        self.assertEqual(interpret(SemanticAST(map_ops=(("add_k", None),)), self.xs, self.k), [x + self.k for x in self.xs])
-        self.assertEqual(interpret(SemanticAST(map_ops=(("sub_k", None),)), self.xs, self.k), [x - self.k for x in self.xs])
-        self.assertEqual(interpret(SemanticAST(map_ops=(("mul_k", None),)), self.xs, self.k), [x * self.k for x in self.xs])
-        self.assertEqual(interpret(SemanticAST(map_ops=(("mul_const", 3),)), self.xs, self.k), [x * 3 for x in self.xs])
-        self.assertEqual(interpret(SemanticAST(map_ops=(("negate", None),)), self.xs, self.k), [-x for x in self.xs])
-        self.assertEqual(interpret(SemanticAST(map_ops=(("abs", None),)), self.xs, self.k), [abs(x) for x in self.xs])
-        self.assertEqual(interpret(SemanticAST(map_ops=(("square", None),)), self.xs, self.k), [x ** 2 for x in self.xs])
-
-    def test_chained_ops_apply_in_sequence(self):
-        # add_k then mul_const(2): (x + k) * 2, not x + k*2
-        ast = SemanticAST(map_ops=(("add_k", None), ("mul_const", 2)))
-        self.assertEqual(interpret(ast, self.xs, self.k), [(x + self.k) * 2 for x in self.xs])
+    def test_every_map(self):
+        xs, k = [-3, -1, 0, 2, 5], 4
+        for tag, fn in (
+            ("map:add_k", lambda x: x + k),
+            ("map:sub_k", lambda x: x - k),
+            ("map:mul_k", lambda x: x * k),
+            ("map:mul_const:2", lambda x: x * 2),
+            ("map:mul_const:3", lambda x: x * 3),
+            ("map:negate", lambda x: -x),
+            ("map:abs", abs),
+            ("map:square", lambda x: x ** 2),
+        ):
+            self.assertEqual(interpret(A(tag), xs, k), [fn(x) for x in xs], tag)
 
 
 class InterpretOrderOps(unittest.TestCase):
     def test_ascending_descending_reverse(self):
         xs = [3, 1, 4, 1, 5]
-        self.assertEqual(interpret(SemanticAST(order_op="ascending"), xs, 1), sorted(xs))
-        self.assertEqual(interpret(SemanticAST(order_op="descending"), xs, 1), sorted(xs, reverse=True))
-        self.assertEqual(interpret(SemanticAST(order_op="reverse"), xs, 1), list(reversed(xs)))
+        self.assertEqual(interpret(A("order:ascending"), xs, 1), sorted(xs))
+        self.assertEqual(interpret(A("order:descending"), xs, 1), sorted(xs, reverse=True))
+        self.assertEqual(interpret(A("order:reverse"), xs, 1), list(reversed(xs)))
 
 
 class InterpretSliceOps(unittest.TestCase):
     def test_take_first_last_and_step(self):
         xs = list(range(10))
         k = 3
-        self.assertEqual(interpret(SemanticAST(slice_ops=("take_first_k",)), xs, k), xs[:k])
-        self.assertEqual(interpret(SemanticAST(slice_ops=("take_last_k",)), xs, k), xs[-k:])
-        self.assertEqual(interpret(SemanticAST(slice_ops=("step_2",)), xs, k), xs[::2])
+        self.assertEqual(interpret(A("slice:take_first_k"), xs, k), xs[:k])
+        self.assertEqual(interpret(A("slice:take_last_k"), xs, k), xs[-k:])
+        self.assertEqual(interpret(A("slice:step_2"), xs, k), xs[::2])
 
     def test_take_last_k_longer_than_list(self):
         xs = [1, 2]
-        self.assertEqual(interpret(SemanticAST(slice_ops=("take_last_k",)), xs, 10), xs)
-
-    def test_chained_slice_ops_apply_in_sequence(self):
-        xs = list(range(10))
-        k = 4
-        ast = SemanticAST(slice_ops=("take_first_k", "step_2"))
-        self.assertEqual(interpret(ast, xs, k), xs[:k][::2])
-        reversed_ast = SemanticAST(slice_ops=("step_2", "take_first_k"))
-        self.assertEqual(interpret(reversed_ast, xs, k), xs[::2][:k])
+        self.assertEqual(interpret(A("slice:take_last_k"), xs, 10), xs)
 
 
-class InterpretPipelineOrder(unittest.TestCase):
+class InterpretOpOrder(unittest.TestCase):
+    """Ops run left to right, in ``ast.ops`` order."""
+
     def test_filter_then_map_then_order(self):
-        # at most 3 active categories (schema.py's design note), so this
-        # exercises filter -> map -> order; slice ordering is covered below.
-        ast = SemanticAST(filters=("positive",), map_ops=(("mul_const", 2),), order_op="descending")
-        xs = [-5, 1, -2, 3, 8, 2]
-        k = 2
-        expected_filtered = [x for x in xs if x > 0]
-        expected_mapped = [x * 2 for x in expected_filtered]
-        expected = sorted(expected_mapped, reverse=True)
-        self.assertEqual(interpret(ast, xs, k), expected)
+        xs, k = [-5, 1, -2, 3, 8, 2], 2
+        ast = A("filter:positive", "map:mul_const:2", "order:descending")
+        self.assertEqual(interpret(ast, xs, k), sorted([x * 2 for x in xs if x > 0], reverse=True))
 
-    def test_order_then_slice(self):
-        ast = SemanticAST(order_op="ascending", slice_ops=("take_first_k",))
-        xs = [9, -1, 4, 2, 7]
-        k = 3
-        expected = sorted(xs)[:k]
-        self.assertEqual(interpret(ast, xs, k), expected)
+    def test_the_order_of_the_ops_changes_the_result(self):
+        xs, k = [1, 2, 3, 4, 5, 6], 3
+        self.assertEqual(interpret(A("filter:even", "slice:take_first_k"), xs, k), [2, 4, 6])
+        self.assertEqual(interpret(A("slice:take_first_k", "filter:even"), xs, k), [2])
+
+    def test_sort_before_a_non_monotone_map(self):
+        self.assertEqual(interpret(A("order:ascending", "map:negate"), [3, -1, 2], 1), [1, -2, -3])
+        self.assertEqual(interpret(A("map:negate", "order:ascending"), [3, -1, 2], 1), [-3, -2, 1])
+
+    def test_repeated_ops_are_applied_every_time(self):
+        xs, k = [1, 2, 3, 4, 5], 2
+        self.assertEqual(interpret(A("map:add_k", "map:add_k"), xs, k), [x + 2 * k for x in xs])
+        self.assertEqual(interpret(A("map:mul_const:3", "map:mul_const:3", "map:mul_const:3"), xs, k), [x * 27 for x in xs])
+        self.assertEqual(interpret(A("slice:step_2", "slice:step_2"), xs, k), [1, 5])
+        self.assertEqual(interpret(A("order:reverse", "order:reverse"), xs, k), xs)
+
+    def test_interleaved_categories(self):
+        xs, k = [9, -1, 4, 2, 7, 6], 3
+        ast = A("slice:take_first_k", "map:square", "slice:take_last_k")
+        self.assertEqual(interpret(ast, xs, k), [x ** 2 for x in xs[:k]][-k:])
 
 
 if __name__ == "__main__":

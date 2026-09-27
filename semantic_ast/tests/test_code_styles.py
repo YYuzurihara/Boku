@@ -19,8 +19,6 @@ sys.path.insert(0, str(_SEMANTIC_AST.parent / "sandbox"))
 import ast_safety  # noqa: E402  (sandbox/ast_safety.py)
 
 from code_styles import (  # noqa: E402
-    COND_AST_ORDER,
-    COND_SWAPPED,
     FORM_COMPREHENSION,
     FORM_LOOP,
     NAME_SCHEMES,
@@ -51,7 +49,6 @@ class CatalogueTest(unittest.TestCase):
         for axis, values in (
             ("form", (FORM_COMPREHENSION, FORM_LOOP)),
             ("temporaries", (TEMP_NONE, TEMP_REUSED, TEMP_STAGED)),
-            ("condition_order", (COND_AST_ORDER, COND_SWAPPED)),
             ("order_spelling", (ORDER_BUILTIN, ORDER_EXPLICIT)),
             ("annotations", (True, False)),
             ("comments", (True, False)),
@@ -67,7 +64,7 @@ class CatalogueTest(unittest.TestCase):
 class NameSchemeTest(unittest.TestCase):
     def test_names_are_identifiers_and_distinct(self):
         for scheme in NAME_SCHEMES:
-            names = (scheme.element, scheme.result, *scheme.stages)
+            names = (scheme.element, scheme.result, *scheme.stages, scheme.buffer)
             for name in names:
                 self.assertTrue(name.isidentifier(), f"{scheme.name}: {name!r}")
             self.assertEqual(len(set(names)), len(names), f"{scheme.name}: duplicate names")
@@ -76,37 +73,50 @@ class NameSchemeTest(unittest.TestCase):
         """A variable named ``sorted`` or ``list`` would shadow the builtin the
         very next line calls."""
         for scheme in NAME_SCHEMES:
-            for name in (scheme.element, scheme.result, *scheme.stages):
+            for name in (scheme.element, scheme.result, *scheme.stages, scheme.buffer):
                 self.assertNotIn(name, ast_safety.ALLOWED_CALL_NAMES, f"{scheme.name}: {name!r}")
                 self.assertNotIn(name, ("xs", "k", "solve"), f"{scheme.name}: {name!r}")
 
 
 class TagGateTest(unittest.TestCase):
-    def test_condition_swap_needs_two_predicates(self):
-        one = SemanticAST(filters=("even",))
-        two = SemanticAST(filters=("even", "ge_k"))
-        self.assertNotIn("condition_swapped", [s.name for s in styles_for(one)])
-        self.assertIn("condition_swapped", [s.name for s in styles_for(two)])
-
-    def test_alternative_reverse_spelling_needs_an_ordering_op(self):
-        for order_op, expected in (("ascending", False), ("descending", True), ("reverse", True), (None, False)):
-            ast = SemanticAST(filters=("even",), order_op=order_op)
-            names = [style.name for style in styles_for(ast)]
-            self.assertEqual("explicit_reverse" in names, expected, f"order_op={order_op}")
-            self.assertEqual("for_loop_explicit_reverse" in names, expected, f"order_op={order_op}")
+    def test_alternative_reverse_spelling_needs_a_reverse_op(self):
+        for tags, expected in (
+            (("filter:even", "order:ascending"), False),
+            (("filter:even", "order:descending"), False),
+            (("filter:even", "order:reverse"), True),
+            (("order:reverse", "filter:even"), True),
+            (("filter:even",), False),
+        ):
+            names = [style.name for style in styles_for(SemanticAST.of(*tags))]
+            self.assertEqual("explicit_reverse" in names, expected, tags)
+            self.assertEqual("for_loop_explicit_reverse" in names, expected, tags)
 
     def test_ungated_styles_apply_to_every_semantic_ast(self):
-        ungated = {style.name for style in STYLES if not style.requires.any_tags and not style.requires.min_filters}
+        ungated = {style.name for style in STYLES if not style.requires.gates()}
         for ast in enumerate_all()[:500]:
             self.assertTrue(ungated <= {style.name for style in styles_for(ast)})
 
 
-class TwentyRenderingsTest(unittest.TestCase):
-    def test_every_semantic_ast_has_at_least_twenty_distinct_renderings(self):
+class RenderingCountTest(unittest.TestCase):
+    def test_every_semantic_ast_has_at_least_fifty_distinct_renderings(self):
+        """The floor the corpus relies on: the number of (instruction, code)
+        pairs a semantic AST yields is bounded by its applicable styles, and
+        every style of a given AST renders a source no other style of that AST
+        renders (``variants`` would otherwise collapse them and return fewer)."""
         from code_generator import variants  # noqa: PLC0415
 
-        for ast in enumerate_all()[::7]:
-            self.assertGreaterEqual(len(variants(ast)), 20, ast.to_dict())
+        for ast in enumerate_all()[::97]:
+            self.assertGreaterEqual(len(variants(ast)), 50, ast.to_dict())
+
+    def test_no_two_applicable_styles_render_the_same_source(self):
+        """Over the whole enumeration, not a sample: a collision would put the
+        same snippet in the corpus under two ``code_style`` labels."""
+        from code_generator import render  # noqa: PLC0415
+
+        for ast in enumerate_all():
+            styles = styles_for(ast)
+            sources = {render(ast, style) for style in styles}
+            self.assertEqual(len(sources), len(styles), ast.to_dict())
 
     def test_every_commented_style_twins_an_uncommented_one(self):
         for style in STYLES:
@@ -117,14 +127,14 @@ class TwentyRenderingsTest(unittest.TestCase):
 
 class SelectStylesTest(unittest.TestCase):
     def test_selection_is_deterministic_and_bounded(self):
-        ast = SemanticAST(filters=("even", "ge_k"), order_op="descending")
+        ast = SemanticAST.of("filter:even", "order:descending")
         first = select_styles(ast, 3)
         self.assertEqual(first, select_styles(ast, 3))
         self.assertEqual(len(first), 3)
         self.assertEqual(len(set(style.name for style in first)), 3)
 
     def test_n_none_or_too_large_returns_every_applicable_style(self):
-        ast = SemanticAST(map_ops=(("add_k", None),))
+        ast = SemanticAST.of("map:add_k")
         self.assertEqual(select_styles(ast, None), styles_for(ast))
         self.assertEqual(select_styles(ast, 99), styles_for(ast))
         self.assertEqual(select_styles(ast, 0), ())
@@ -133,10 +143,10 @@ class SelectStylesTest(unittest.TestCase):
         """Taking the first n applicable styles would pin every record to the
         head of the catalogue (homework.md: 「コード形式を均す」)."""
         counts = Counter()
-        for ast in enumerate_all()[:2000]:
+        for ast in enumerate_all():
             for style in select_styles(ast, 2):
                 counts[style.name] += 1
-        ungated = [s.name for s in STYLES if not s.requires.any_tags and not s.requires.min_filters]
+        ungated = [s.name for s in STYLES if not s.requires.gates()]
         for name in ungated:
             self.assertGreater(counts[name], 0, f"{name} never selected")
         share = [counts[name] for name in ungated]

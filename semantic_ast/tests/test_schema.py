@@ -11,130 +11,122 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from schema import SemanticAST, SemanticASTError  # noqa: E402
+from schema import ATOMIC_OPS, AtomicOp, SemanticAST, SemanticASTError  # noqa: E402
 
 
-class SemanticASTValidation(unittest.TestCase):
-    def test_valid_worked_example_from_homework(self):
-        ast = SemanticAST(filters=("even", "ge_k"), map_ops=(("mul_const", 2),), order_op="ascending")
-        self.assertEqual(ast.num_categories(), 3)
+class AtomicOps(unittest.TestCase):
+    def test_there_are_24_distinct_atomic_ops(self):
+        self.assertEqual(len(ATOMIC_OPS), 24)
+        self.assertEqual(len({op.tag for op in ATOMIC_OPS}), 24)
+        by_category = {}
+        for op in ATOMIC_OPS:
+            by_category[op.category] = by_category.get(op.category, 0) + 1
+        self.assertEqual(by_category, {"filter": 10, "map": 8, "order": 3, "slice": 3})
 
-    def test_rejects_empty_ast(self):
-        with self.assertRaises(SemanticASTError):
-            SemanticAST()
+    def test_mul_const_constants_are_separate_ops(self):
+        self.assertIn(AtomicOp("map", "mul_const", 2), ATOMIC_OPS)
+        self.assertIn(AtomicOp("map", "mul_const", 3), ATOMIC_OPS)
 
-    def test_rejects_four_categories(self):
-        with self.assertRaises(SemanticASTError):
-            SemanticAST(
-                filters=("even",),
-                map_ops=(("negate", None),),
-                order_op="ascending",
-                slice_ops=("step_2",),
-            )
-
-    def test_rejects_same_group_filter_pair(self):
-        with self.assertRaises(SemanticASTError):
-            SemanticAST(filters=("even", "odd"))
-        with self.assertRaises(SemanticASTError):
-            SemanticAST(filters=("positive", "zero"))
-        with self.assertRaises(SemanticASTError):
-            SemanticAST(filters=("gt_k", "le_k"))
-
-    def test_rejects_too_many_filters(self):
-        with self.assertRaises(SemanticASTError):
-            SemanticAST(filters=("even", "positive", "multiple_of_k"))
+    def test_tag_round_trip(self):
+        for op in ATOMIC_OPS:
+            self.assertEqual(AtomicOp.from_tag(op.tag), op)
+            self.assertEqual(AtomicOp.from_json(op.to_json()), op)
 
     def test_rejects_unknown_ops(self):
-        with self.assertRaises(SemanticASTError):
-            SemanticAST(filters=("nonsense",))
-        with self.assertRaises(SemanticASTError):
-            SemanticAST(map_ops=(("nonsense", None),))
-        with self.assertRaises(SemanticASTError):
-            SemanticAST(order_op="nonsense")
-        with self.assertRaises(SemanticASTError):
-            SemanticAST(slice_ops=("nonsense",))
+        for category, name in (("filter", "nonsense"), ("map", "nonsense"), ("order", "nonsense"),
+                               ("slice", "nonsense"), ("nonsense", "even"), ("map", "even")):
+            with self.assertRaises(SemanticASTError, msg=(category, name)):
+                AtomicOp(category, name)
 
     def test_rejects_mul_const_with_bad_arg(self):
         with self.assertRaises(SemanticASTError):
-            SemanticAST(map_ops=(("mul_const", 11),))
-
-    def test_rejects_no_arg_map_with_arg(self):
+            AtomicOp("map", "mul_const", 11)
         with self.assertRaises(SemanticASTError):
-            SemanticAST(map_ops=(("negate", 3),))
+            AtomicOp("map", "mul_const")
 
-    def test_rejects_too_many_map_ops(self):
+    def test_rejects_no_arg_op_with_arg(self):
         with self.assertRaises(SemanticASTError):
-            SemanticAST(map_ops=(("negate", None), ("abs", None), ("square", None)))
-
-    def test_rejects_duplicate_map_op_type(self):
+            AtomicOp("map", "negate", 3)
         with self.assertRaises(SemanticASTError):
-            SemanticAST(map_ops=(("mul_const", 2), ("mul_const", 3)))
+            AtomicOp("filter", "even", 2)
 
-    def test_rejects_too_many_slice_ops(self):
+
+class SemanticASTValidation(unittest.TestCase):
+    def test_valid_three_op_problem(self):
+        ast = SemanticAST.of("filter:even", "map:mul_const:2", "order:ascending")
+        self.assertEqual(ast.num_ops(), 3)
+        self.assertEqual(ast.categories(), ("filter", "map", "order"))
+
+    def test_rejects_empty_ast(self):
         with self.assertRaises(SemanticASTError):
-            SemanticAST(slice_ops=("take_first_k", "take_last_k", "step_2"))
+            SemanticAST(())
 
-    def test_rejects_duplicate_slice_op(self):
+    def test_rejects_four_ops(self):
         with self.assertRaises(SemanticASTError):
-            SemanticAST(slice_ops=("step_2", "step_2"))
+            SemanticAST.of("filter:even", "map:negate", "order:ascending", "slice:step_2")
 
-    def test_accepts_chained_map_ops(self):
-        ast = SemanticAST(map_ops=(("add_k", None), ("mul_const", 2)))
-        self.assertEqual(ast.num_categories(), 1)
-
-    def test_accepts_chained_slice_ops(self):
-        ast = SemanticAST(slice_ops=("take_first_k", "step_2"))
-        self.assertEqual(ast.num_categories(), 1)
+    def test_repetition_is_allowed(self):
+        """1-3 ops *with* repetition: the same op, or the same category, may
+        occur more than once."""
+        for tags in (
+            ("filter:even", "filter:even"),
+            ("filter:even", "filter:odd"),
+            ("map:mul_const:2", "map:mul_const:2", "map:mul_const:2"),
+            ("order:reverse", "order:reverse"),
+            ("slice:take_first_k", "map:add_k", "slice:take_first_k"),
+        ):
+            self.assertEqual(SemanticAST.of(*tags).tags(), tags)
 
 
 class SemanticASTRoundTrip(unittest.TestCase):
-    def test_to_dict_matches_homework_shape(self):
-        ast = SemanticAST(filters=("even", "ge_k"), map_ops=(("mul_const", 2),), order_op="ascending")
+    def test_to_dict_shape(self):
+        ast = SemanticAST.of("filter:even", "map:mul_const:2", "order:ascending")
         self.assertEqual(
             ast.to_dict(),
-            {"filter": ["even", "ge_k"], "map": [["mul_const", 2]], "order": "ascending"},
+            {"ops": [["filter", "even"], ["map", "mul_const", 2], ["order", "ascending"]]},
         )
-
-    def test_to_dict_reflects_chained_map_ops(self):
-        ast = SemanticAST(map_ops=(("add_k", None), ("mul_const", 2)))
-        self.assertEqual(ast.to_dict(), {"map": [["add_k"], ["mul_const", 2]]})
 
     def test_from_dict_round_trip(self):
         for ast in [
-            SemanticAST(filters=("even", "ge_k"), map_ops=(("mul_const", 2),), order_op="ascending"),
-            SemanticAST(slice_ops=("take_first_k",)),
-            SemanticAST(map_ops=(("add_k", None),), slice_ops=("step_2",)),
-            SemanticAST(map_ops=(("add_k", None), ("mul_const", 2))),
-            SemanticAST(slice_ops=("take_first_k", "step_2")),
+            SemanticAST.of("filter:even", "map:mul_const:2", "order:ascending"),
+            SemanticAST.of("slice:take_first_k"),
+            SemanticAST.of("slice:step_2", "map:add_k", "slice:step_2"),
         ]:
             restored = SemanticAST.from_dict(ast.to_dict())
             self.assertEqual(ast, restored)
             self.assertEqual(ast.semantic_hash(), restored.semantic_hash())
 
+    def test_from_dict_rejects_the_old_category_slot_format(self):
+        with self.assertRaises(SemanticASTError):
+            SemanticAST.from_dict({"filter": ["even"], "order": "ascending"})
+
 
 class SemanticHash(unittest.TestCase):
-    def test_hash_is_order_independent_within_filters(self):
-        a = SemanticAST(filters=("even", "ge_k"))
-        b = SemanticAST(filters=("ge_k", "even"))
-        self.assertEqual(a.semantic_hash(), b.semantic_hash())
+    def test_hash_differs_for_different_ops(self):
+        self.assertNotEqual(SemanticAST.of("filter:even").semantic_hash(), SemanticAST.of("filter:odd").semantic_hash())
 
-    def test_hash_differs_for_different_semantics(self):
-        a = SemanticAST(filters=("even",))
-        b = SemanticAST(filters=("odd",))
+    def test_hash_differs_for_a_different_order_of_the_same_ops(self):
+        """schema.py "Order is identity": even when both orders compute the
+        same function (filter and sort commute)."""
+        a = SemanticAST.of("filter:even", "order:ascending")
+        b = SemanticAST.of("order:ascending", "filter:even")
+        self.assertNotEqual(a, b)
         self.assertNotEqual(a.semantic_hash(), b.semantic_hash())
 
-    def test_hash_is_order_sensitive_for_map_ops(self):
-        a = SemanticAST(map_ops=(("add_k", None), ("mul_const", 2)))
-        b = SemanticAST(map_ops=(("mul_const", 2), ("add_k", None)))
-        self.assertNotEqual(a.semantic_hash(), b.semantic_hash())
+    def test_hash_differs_for_a_repeated_op(self):
+        self.assertNotEqual(
+            SemanticAST.of("filter:even").semantic_hash(),
+            SemanticAST.of("filter:even", "filter:even").semantic_hash(),
+        )
 
-    def test_hash_is_order_sensitive_for_slice_ops(self):
-        a = SemanticAST(slice_ops=("take_first_k", "step_2"))
-        b = SemanticAST(slice_ops=("step_2", "take_first_k"))
-        self.assertNotEqual(a.semantic_hash(), b.semantic_hash())
+    def test_op_tags_are_order_free_but_tags_are_not(self):
+        a = SemanticAST.of("filter:even", "order:ascending")
+        b = SemanticAST.of("order:ascending", "filter:even")
+        self.assertEqual(a.op_tags(), b.op_tags())
+        self.assertNotEqual(a.tags(), b.tags())
 
     def test_hash_is_stable_hex_sha256(self):
-        h = SemanticAST(filters=("even",)).semantic_hash()
+        h = SemanticAST.of("filter:even").semantic_hash()
         self.assertEqual(len(h), 64)
         int(h, 16)  # must not raise
 

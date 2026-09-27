@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 
@@ -35,24 +36,21 @@ from code_styles import STYLES, STYLES_BY_NAME, styles_for  # noqa: E402
 from code_verifier import MAX_CODE_LINES, MAX_LINE_CHARS, check_length, cross_check, ok, verify, verify_variant  # noqa: E402
 from generator import enumerate_all  # noqa: E402
 from reference_interpreter import interpret  # noqa: E402
-from schema import SemanticAST  # noqa: E402
+from schema import AtomicOp, SemanticAST  # noqa: E402
 from testcases import generate_test_cases  # noqa: E402
 
-# homework.md's worked example: "整数リストxsからk以上の偶数だけを残し、それ
-# ぞれを2倍して昇順に並べる".
-WORKED_EXAMPLE = SemanticAST(
-    filters=("even", "ge_k"), map_ops=(("mul_const", 2),), order_op="ascending"
-)
+# homework.md's worked example ("整数リストxsからk以上の偶数だけを残し、それ
+# ぞれを2倍して昇順に並べる") in 3 ops: k以上 is dropped.
+WORKED_EXAMPLE = SemanticAST.of("filter:even", "map:mul_const:2", "order:ascending")
 
 
 def sample_asts(n: int) -> list[SemanticAST]:
-    """One semantic AST per structural shape, then a deterministic spread --
-    enough coverage for a unit test without enumerating all 40,589."""
+    """One semantic AST per category sequence (84), then a deterministic
+    spread -- enough coverage for a unit test without verifying all 14,424."""
     by_shape: dict[tuple, SemanticAST] = {}
     every = enumerate_all()
     for ast in every:
-        shape = (ast.active_categories(), len(ast.filters), len(ast.map_ops), len(ast.slice_ops))
-        by_shape.setdefault(shape, ast)
+        by_shape.setdefault(ast.categories(), ast)
     chosen = list(by_shape.values())
     step = max(1, len(every) // n)
     chosen += every[::step][: max(0, n - len(chosen))]
@@ -61,18 +59,13 @@ def sample_asts(n: int) -> list[SemanticAST]:
 
 class RenderTest(unittest.TestCase):
     def test_worked_example_matches_homework_md(self):
-        """homework.md's 期待されるコードの一例, byte for byte."""
+        """homework.md's 期待されるコードの一例, byte for byte, minus the
+        second condition."""
         expected = (
             "def solve(xs: list[int], k: int) -> list[int]:\n"
-            "    return sorted([x * 2 for x in xs if x >= k and x % 2 == 0])\n"
+            "    return sorted([x * 2 for x in xs if x % 2 == 0])\n"
         )
-        self.assertEqual(render(WORKED_EXAMPLE, STYLES_BY_NAME["condition_swapped"]), expected)
-
-    def test_condition_order_axis_swaps_the_predicates(self):
-        plain = render(WORKED_EXAMPLE, STYLES_BY_NAME["list_comprehension"])
-        swapped = render(WORKED_EXAMPLE, STYLES_BY_NAME["condition_swapped"])
-        self.assertIn("if x % 2 == 0 and x >= k", plain)
-        self.assertIn("if x >= k and x % 2 == 0", swapped)
+        self.assertEqual(render(WORKED_EXAMPLE, STYLES_BY_NAME["list_comprehension"]), expected)
 
     def test_every_style_renders_valid_safe_code(self):
         for ast in sample_asts(120):
@@ -92,7 +85,7 @@ class RenderTest(unittest.TestCase):
 
     def test_comment_axis(self):
         for style in STYLES:
-            ast = SemanticAST(filters=("even",), order_op="reverse")
+            ast = SemanticAST.of("filter:even", "order:reverse")
             if not style.applies_to(ast):
                 continue
             code = render(ast, style)
@@ -110,39 +103,55 @@ class RenderTest(unittest.TestCase):
             self.assertEqual(has_comprehension, style.form == "comprehension", f"{style.name}:\n{code}")
 
     def test_reverse_spelling_axis(self):
-        descending = SemanticAST(filters=("even",), order_op="descending")
-        self.assertIn("reverse=True", render(descending, STYLES_BY_NAME["list_comprehension"]))
-        self.assertIn("[::-1]", render(descending, STYLES_BY_NAME["explicit_reverse"]))
-        self.assertIn(".sort(reverse=True)", render(descending, STYLES_BY_NAME["for_loop"]))
-        self.assertIn(".reverse()", render(descending, STYLES_BY_NAME["for_loop_explicit_reverse"]))
+        reverse = SemanticAST.of("filter:even", "order:reverse")
+        self.assertIn("[::-1]", render(reverse, STYLES_BY_NAME["list_comprehension"]))
+        self.assertIn("list(reversed(", render(reverse, STYLES_BY_NAME["explicit_reverse"]))
+        self.assertIn("result.reverse()", render(reverse, STYLES_BY_NAME["for_loop"]))
+        self.assertIn("result = result[::-1]", render(reverse, STYLES_BY_NAME["for_loop_explicit_reverse"]))
+
+    def test_descending_has_one_spelling_distinct_from_ascending_then_reverse(self):
+        """``sorted(xs)[::-1]`` is what ascending-then-reverse renders to, so
+        descending never uses it (two ASTs must not share a code)."""
+        descending = SemanticAST.of("order:descending")
+        for style in styles_for(descending):
+            code = render(descending, style)
+            self.assertIn("reverse=True", code, style.name)
+            self.assertNotIn("[::-1]", code, style.name)
 
     def test_unknown_operation_is_rejected(self):
         with self.assertRaises(CodeGenError):
-            element_expr((("teleport", None),), "x")
+            element_expr((types.SimpleNamespace(category="map", name="teleport", arg=None),), "x")
 
 
-class PrecedenceTest(unittest.TestCase):
-    """Chained map operations compose into one expression, so the text has to
-    be parenthesised by precedence -- ``-x ** 2`` is not ``(-x) ** 2``."""
-
-    def test_chains_are_parenthesised_correctly(self):
-        for map_ops, expected in (
-            ((("add_k", None), ("mul_const", 2)), "(x + k) * 2"),
-            ((("mul_const", 2), ("add_k", None)), "x * 2 + k"),
-            ((("negate", None), ("square", None)), "(-x) ** 2"),
-            ((("square", None), ("negate", None)), "-x ** 2"),
-            ((("abs", None), ("sub_k", None)), "abs(x) - k"),
-            ((("sub_k", None), ("abs", None)), "abs(x - k)"),
-            ((("add_k", None), ("square", None)), "(x + k) ** 2"),
-            ((("mul_k", None), ("negate", None)), "-(x * k)"),
+class MapExpressionTest(unittest.TestCase):
+    def test_each_map_op(self):
+        for tag, expected in (
+            ("map:add_k", "x + k"),
+            ("map:sub_k", "x - k"),
+            ("map:mul_k", "x * k"),
+            ("map:mul_const:3", "x * 3"),
+            ("map:negate", "-x"),
+            ("map:abs", "abs(x)"),
+            ("map:square", "x ** 2"),
         ):
-            self.assertEqual(element_expr(map_ops, "x").text, expected, map_ops)
+            self.assertEqual(element_expr((AtomicOp.from_tag(tag),), "x").text, expected, tag)
 
-    def test_parenthesisation_agrees_with_the_interpreter(self):
-        """Every ordered pair of map ops, against the interpreter."""
-        pairs = [ast for ast in enumerate_all() if len(ast.map_ops) == 2 and not ast.filters]
-        self.assertGreater(len(pairs), 0)
-        for semantic_ast in pairs:
+    def test_chained_maps_are_parenthesised_by_precedence_in_op_order(self):
+        for tags, expected in (
+            (("map:add_k", "map:mul_const:2"), "(x + k) * 2"),
+            (("map:mul_const:2", "map:add_k"), "x * 2 + k"),
+            (("map:negate", "map:square"), "(-x) ** 2"),
+            (("map:square", "map:negate"), "-x ** 2"),
+            (("map:negate", "map:negate"), "-(-x)"),
+            (("map:square", "map:square"), "(x ** 2) ** 2"),
+            (("map:add_k", "map:sub_k", "map:abs"), "abs(x + k - k)"),
+        ):
+            self.assertEqual(element_expr(tuple(AtomicOp.from_tag(t) for t in tags), "x").text, expected, tags)
+
+    def test_every_map_op_agrees_with_the_interpreter(self):
+        maps = [ast for ast in enumerate_all() if ast.categories() == ("map",)]
+        self.assertEqual(len(maps), 8)
+        for semantic_ast in maps:
             code = render(semantic_ast, STYLES_BY_NAME["list_comprehension"])
             namespace: dict = {}
             exec(compile(code, "<test>", "exec"), namespace)  # noqa: S102 - our own generated code
@@ -202,7 +211,7 @@ class VerificationTest(unittest.TestCase):
     def test_generated_code_does_not_mutate_its_input(self):
         """The loop styles build their own list; ``xs.sort()`` would pass the
         tests and still be wrong (the interpreter copies)."""
-        semantic_ast = SemanticAST(order_op="ascending", slice_ops=("take_first_k",))
+        semantic_ast = SemanticAST.of("order:ascending", "slice:take_first_k")
         for variant in variants(semantic_ast):
             verification = verify_variant(variant, generate_test_cases(semantic_ast, seed=3, n_random=4))
             self.assertTrue(verification["pure"], f"{variant.style.name}\n{variant.code}")
@@ -231,7 +240,7 @@ class VerificationTest(unittest.TestCase):
 
 class VariantTest(unittest.TestCase):
     def test_n_bounds_and_distinctness(self):
-        semantic_ast = SemanticAST(filters=("even", "ge_k"), order_op="descending")
+        semantic_ast = SemanticAST.of("filter:even", "order:descending")
         some = variants(semantic_ast, n=3)
         self.assertEqual(len(some), 3)
         self.assertEqual(len({v.code for v in some}), 3)
@@ -280,6 +289,67 @@ class RecordTest(unittest.TestCase):
         with self.assertRaises(CodeGenError):
             render_from_record(record)
 
+
+class OrderPreservingTest(unittest.TestCase):
+    """The code follows ``ast.ops`` in order, so ASTs that differ only in the
+    order (or repetition) of their ops never share a code (code_generator.py,
+    "Order-preserving rendering")."""
+
+    def test_no_two_asts_share_a_rendering_in_any_style(self):
+        owner: dict[str, str] = {}
+        for semantic_ast in enumerate_all():
+            h = semantic_ast.semantic_hash()
+            for style in styles_for(semantic_ast):
+                code = render(semantic_ast, style)
+                other = owner.setdefault(code, h)
+                self.assertEqual(other, h, f"{semantic_ast.tags()} [{style.name}] renders like another AST:\n{code}")
+
+    def test_reordering_the_same_ops_changes_the_code_in_every_style(self):
+        a = SemanticAST.of("filter:even", "order:ascending")
+        b = SemanticAST.of("order:ascending", "filter:even")
+        for style in styles_for(a):
+            self.assertNotEqual(render(a, style), render(b, style), style.name)
+
+    def test_every_style_matches_the_interpreter_on_reordered_and_repeated_asts(self):
+        for tags in (
+            ("order:ascending", "map:negate"),
+            ("slice:take_first_k", "filter:even", "slice:take_first_k"),
+            ("map:square", "filter:gt_k", "map:sub_k"),
+            ("order:reverse", "order:reverse", "order:reverse"),
+            ("filter:odd", "filter:odd", "map:abs"),
+            ("map:mul_const:3", "order:descending", "filter:multiple_of_k"),
+        ):
+            semantic_ast = SemanticAST.of(*tags)
+            tests = generate_test_cases(semantic_ast, seed=5, n_random=8)
+            for variant in variants(semantic_ast):
+                verification = verify_variant(variant, tests)
+                self.assertTrue(ok(verification), f"{tags} [{variant.style.name}]: {verification}\n{variant.code}")
+
+    def test_consecutive_filters_join_their_conditions_in_op_order(self):
+        style = STYLES_BY_NAME["list_comprehension"]
+        self.assertIn("if x % 2 == 0 and x > 0]", render(SemanticAST.of("filter:even", "filter:positive"), style))
+        self.assertIn("if x > 0 and x % 2 == 0]", render(SemanticAST.of("filter:positive", "filter:even"), style))
+
+    def test_a_filter_after_a_map_is_a_new_stage(self):
+        code = render(SemanticAST.of("map:mul_const:2", "filter:even"), STYLES_BY_NAME["list_comprehension"])
+        self.assertIn("return [x for x in [x * 2 for x in xs] if x % 2 == 0]", code)
+
+    def test_a_loop_after_a_slice_refills_a_buffer(self):
+        semantic_ast = SemanticAST.of("slice:take_first_k", "filter:even")
+        code = render(semantic_ast, STYLES_BY_NAME["for_loop"])
+        self.assertIn("for x in result:", code)
+        self.assertIn("tmp.append(x)", code)
+        self.assertIn("result = tmp", code)
+
+    def test_one_expression_nests_in_op_order(self):
+        semantic_ast = SemanticAST.of("slice:take_first_k", "filter:even")
+        self.assertIn("return [x for x in xs[:k] if x % 2 == 0]", render(semantic_ast, STYLES_BY_NAME["list_comprehension"]))
+
+    def test_staged_names_of_a_repeated_category_get_a_suffix(self):
+        code = render(SemanticAST.of("filter:even", "order:ascending", "filter:positive"), STYLES_BY_NAME["comprehension_staged_typed"])
+        self.assertIn("kept: list[int] = [x for x in xs if x % 2 == 0]", code)
+        self.assertIn("kept_2: list[int] = [x for x in ordered if x > 0]", code)
+        self.assertIn("return kept_2", code)
 
 if __name__ == "__main__":
     unittest.main()

@@ -9,14 +9,14 @@ section. It is the ground truth used to:
     (homework.md: "両者の出力をランダムテストで比較する");
   * judge model-generated code at evaluation time (pass@1 / pass@5).
 
-Pipeline order is fixed: filter -> map -> order -> slice (see the design
-note in ``schema.py``). ``map_ops`` and ``slice_ops`` are each applied in
-the sequence order they appear in the semantic AST (up to 2 ops each).
+The atomic operations run one at a time, in ``ast.ops`` order.
 """
 
 from __future__ import annotations
 
-from schema import SemanticAST, validate
+from collections.abc import Sequence
+
+from schema import AtomicOp, SemanticAST, validate
 
 _FILTER_FUNCS = {
     "even": lambda x, k: x % 2 == 0,
@@ -50,29 +50,33 @@ def interpret(ast: SemanticAST, xs: list[int], k: int) -> list[int]:
     ``k`` is contractually 1-10 (never 0) per homework.md's input domain.
     """
     validate(ast)
+    return apply_ops(ast.ops, xs, k)
+
+
+def apply_ops(ops: Sequence[AtomicOp], xs: list[int], k: int) -> list[int]:
+    """``ops`` applied to a copy of ``xs`` left to right (also used on a
+    prefix of an AST, e.g. by ``testcases.py``)."""
     result = list(xs)
-
-    for name in ast.filters:
-        pred = _FILTER_FUNCS[name]
-        result = [x for x in result if pred(x, k)]
-
-    for name, arg in ast.map_ops:
-        fn = _MAP_FUNCS[name]
-        result = [fn(x, k, arg) for x in result]
-
-    if ast.order_op == "ascending":
-        result = sorted(result)
-    elif ast.order_op == "descending":
-        result = sorted(result, reverse=True)
-    elif ast.order_op == "reverse":
-        result = list(reversed(result))
-
-    for op in ast.slice_ops:
-        if op == "take_first_k":
-            result = result[:k]
-        elif op == "take_last_k":
-            result = result[-k:]
-        elif op == "step_2":
-            result = result[::2]
-
+    for op in ops:
+        result = apply_op(op, result, k)
     return result
+
+
+def apply_op(op: AtomicOp, result: list[int], k: int) -> list[int]:
+    if op.category == "filter":
+        pred = _FILTER_FUNCS[op.name]
+        return [x for x in result if pred(x, k)]
+    if op.category == "map":
+        fn = _MAP_FUNCS[op.name]
+        return [fn(x, k, op.arg) for x in result]
+    if op.category == "order":
+        if op.name == "ascending":
+            return sorted(result)
+        if op.name == "descending":
+            return sorted(result, reverse=True)
+        return list(reversed(result))
+    if op.name == "take_first_k":
+        return result[:k]
+    if op.name == "take_last_k":
+        return result[-k:]
+    return result[::2]  # step_2

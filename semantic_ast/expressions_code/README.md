@@ -36,23 +36,28 @@ python -m unittest discover -s semantic_ast/tests -v
 | `form` | `comprehension` / `loop` | 内包表記と通常の`for`ループ |
 | `temporaries` | `none` / `reused` / `staged` | 一時変数の有無、1行の`return`と複数行形式 |
 | `names` | `default` / `terse` / `verbose` | 変数名の変更 |
-| `condition_order` | `ast_order` / `swapped` | 条件式の順序変更 |
 | `order_spelling` | `builtin` / `explicit` | `reverse=True`と逆順操作 |
 | `annotations` | あり / なし | 型注釈の有無 |
 | `comments` | あり / なし | コメントの有無 |
 
+「条件式の順序変更」は軸にしていない。連続する抽出は操作列の順に`and`でつなぐが、その順序は意味ASTの一部（`../README.md`「順序が違えば別の意味AST」）なので、入れ替えると**順序違いの別の意味AST**のコードになってしまう。
+
 「一時変数の有無」と「1行の`return`と複数行形式」は実際には同じ軸になる（一時変数を使わないことが1行`return`を可能にしている）ので1つにまとめ、代わりに`staged`（段ごとに別名の変数を置く）を加えて3値にしている。
 
-全軸の直積は288通りになるが、`homework.md`のデータ規模表が上限を設けているのは**意味ASTあたりの例数**であってスタイル数ではないし、288通りの大半は形が同じで注釈・コメントだけが違う。そこで**名前付きスタイルのカタログ**（`STYLES`）を手で選んである。中身は、どの意味ASTでも別物になる10種の基本形に、コメントなし／ありの2通り（`_commented`が付く方が固定のカテゴリ別コメント入り）を掛けた**20種**と、下記タグで出し分ける3種である。したがって**どの意味ASTからも最低20種類**のコードができる（タグに該当すれば21〜23種類）。各軸の各値が最低2回は現れ、名前から形が分かり、軸の定数は公開したままなので別のカタログを組むこともできる。スタイル名がそのまま`homework.md`のデータレコードの`code_style`になる。
+全軸の直積は144通りだが、`order_spelling`は`order:reverse`を持つ意味ASTでしか意味を持たない（下記タグ）ので、残りは`form`×`temporaries`×`names`×`annotations`×`comments`の72通りになる。このうち`loop`×`none`の6通りは書き分けようがない——`for`ループは反復をまたいで`append`する先が必要なので、`_loop_body`は`none`を`reused`とまったく同じに描画し、別の`code_style`名で1バイト違わず同一のコードができてしまう。残る**30種の基本形**（`comprehension`が3×3×2、`loop`が2×3×2）にコメントなし／ありの2通り（`_commented`が付く方が固定のカテゴリ別コメント入り）を掛けた**60種**が`STYLES`の本体で、さらに下記タグで出し分ける2種が続く。
+
+内包表記・ループ・一時変数・変数名・注釈・コメントの直積を**間引かずに埋めている**のは、日本語側が意味ASTあたり数百〜数千通りの異なる指示文を書けるため、1つの意味ASTから取れる(指示文, コード)の組数がこのカタログだけで決まるから（`data/corpus_generator.py`はコード1件に指示文1件を対応させる）。適用可能なスタイルは互いに必ず異なるコードを出す（`annotations`はシグネチャと各変数の初出、`names`は識別子、`comments`はコメント行を必ず動かす）ので、**どの意味ASTからも52〜62種類**のコードができる（順序・切り出しだけの155件は52種類、大半は60種類、`order:reverse`を持てば62種類）。各軸の各値が最低2回は現れ、名前から形が分かり、軸の定数は公開したままなので別のカタログを組むこともできる。スタイル名がそのまま`homework.md`のデータレコードの`code_style`になる。
 
 ### タグによる出し分け
 
 一部のスタイルは、特定の意味ASTでしか**別物にならない**:
 
-- `condition_swapped`（条件式の順序を入れ替える）は述語が2つないと入れ替えるものがない
-- `explicit_reverse` / `for_loop_explicit_reverse`（`sorted(...)[::-1]`、`.reverse()`）は`descending`か`reverse`がないと書き分けようがない
+- `explicit_reverse` / `for_loop_explicit_reverse`（`list(reversed(...))`、`result = result[::-1]`）は`order:reverse`がないと書き分けようがない
+- `temporaries=none`の内包表記のうち4種（`list_comprehension_default_bare` / `_terse_typed` / `_verbose_typed` / `_verbose_bare`）は、抽出も変換もない意味AST（`sorted(xs)[:k]`のように何も内包しないコードになる）では変数名を動かす先がなく、注釈の値が同じ他方と一致してしまう。そこで`filter`か`map`の操作を持つ意味ASTだけに出す（`NEEDS_ELEMENT`）。`reused`と`staged`は操作に関係なく必ず変数を名付けるので、この制限は`none`の行だけに要る
 
-該当しない意味ASTでこれらをレンダリングすると、**別の`code_style`名を持つバイト単位で同一のコード**ができてしまい、コーパスのスタイル分布が静かに壊れる。そこで各スタイルは`SemanticAST.op_tags()`に対する条件（`StyleRequirement`）を宣言し、`styles_for(ast)`がその意味ASTが実際に行使できるスタイルだけを返す。
+`descending`の別表記（`sorted(xs)[::-1]`や`.sort()`+`.reverse()`）は**使わない**。これは`ascending`→`reverse`という別の意味ASTのコードと1バイト違わず一致してしまい、「異なる意味ASTには異なるコード」が崩れるため。`descending`は常に`reverse=True`で書く。
+
+該当しない意味ASTでこれらをレンダリングすると、**別の`code_style`名を持つバイト単位で同一のコード**ができてしまい、コーパスのスタイル分布が静かに壊れる。そこで各スタイルは`SemanticAST.op_tags()`／`SemanticAST.categories()`に対する条件（`StyleRequirement`）を宣言し、`styles_for(ast)`がその意味ASTが実際に行使できるスタイルだけを返す。全意味AST14,424件について、適用可能なスタイルが互いに異なるコードを出すことは`tests/test_code_styles.py`が網羅的に検査する。
 
 `select_styles(ast, n)`は、適用可能なスタイルの列を**意味ハッシュ由来のオフセットで回転させてから**n個取る。先頭からn個取ると`list_comprehension`が全レコードに現れてカタログ後半がほぼ使われず、`homework.md`の「コード形式を均す」と逆のことになるため。回転量は`semantic_hash`から取る（実行ごとに変わる組み込み`hash()`ではない）ので、再現性がある。
 
@@ -63,16 +68,27 @@ from code_generator import render, variants
 from code_styles import STYLES_BY_NAME
 from schema import SemanticAST
 
-ast = SemanticAST(filters=("even", "ge_k"), map_ops=(("mul_const", 2),), order_op="ascending")
-print(render(ast, STYLES_BY_NAME["condition_swapped"]))
+ast = SemanticAST.of("filter:even", "map:mul_const:2", "order:ascending")
+print(render(ast, STYLES_BY_NAME["list_comprehension"]))
 # def solve(xs: list[int], k: int) -> list[int]:
-#     return sorted([x * 2 for x in xs if x >= k and x % 2 == 0])   ← homework.mdの作問例そのもの
+#     return sorted([x * 2 for x in xs if x % 2 == 0])   ← homework.mdの作問例から条件 x >= k を外したもの
 
 for variant in variants(ast, n=3):   # タグで絞ったうえで回転して3種類
     print(variant.style.name, variant.code_sha256[:12])
 ```
 
-実行順は常に意味ASTの `filter → map → order → slice`。スタイルが変えるのは**その書き方**だけで、計算する内容は絶対に変えない。
+**順序を保つ生成**: コードは意味ASTの操作列（`ast.ops`）を**左から順に1つずつ**書き下す。したがって同じ原子操作の組でも順序が違えば、どのスタイルでも必ず別のコードになる（同じ関数を計算する順序違い、例えば抽出とソートの入れ替えでも）。全14,424意味AST×全スタイル（291,890件）で、異なる意味ASTのコードが1件も一致しないことを`tests/test_code_generator.py`が毎回検査している。
+
+隣り合う操作は次の規則で**段**（`_stages`）にまとめるが、まとめても順序は失われない:
+
+| 段 | まとめ方 | 例 |
+| --- | --- | --- |
+| 抽出の連続→変換の連続 | 1つの内包表記/ループ。条件は操作順に`and`でつなぎ、変換は操作順に入れ子にする | `[(x + k) * 2 for x in xs if x % 2 == 0 and x > 0]` |
+| 変換の後の抽出 | 新しい段（外側の内包表記） | `[x for x in [x * 2 for x in xs] if x % 2 == 0]` |
+| 切り出しの連続 | 添字の連鎖 | `xs[:k][::2]` |
+| 並べ替え | 1操作1段 | `sorted(sorted(xs), reverse=True)` |
+
+`staged`スタイルは操作1つにつき1文で、同じカテゴリが2回目以降に現れると変数名に`_2`、`_3`を付ける（`kept`, `kept_2`）。reusedのループ形式で別の段の後にループが来るときは、反復中のリストに追記しないよう`NameScheme.buffer`に集めてから差し替える。スタイルが変えるのは**その書き方**だけで、計算する内容と操作の順序は絶対に変えない。
 
 **演算子の優先順位**: 連結された`map`は1つの式に合成されるので、文字列連結ではなく優先順位で括弧を付ける必要がある。`add_k`→`mul_const(2)`は`(x + k) * 2`、`negate`→`square`は`(-x) ** 2`（括弧なしの`-x ** 2`はPythonでは`-(x ** 2)`と読まれてしまう）。`_Expr`がテキストと一緒に優先順位を持ち回り、必要な箇所だけ括弧で包む。
 
@@ -96,7 +112,7 @@ for variant in variants(ast, n=3):   # タグで絞ったうえで回転して3�
 
 ### なぜDockerサンドボックスの外で実行するのか
 
-`sandbox/client.py`は「信頼できないモデル生成コードはコンテナの中でしか実行しない」と明記している。ここで実行するのはそのどちらでもない——このリポジトリの閉じた語彙から`code_generator.py`が生成したコードであり、実行前に`ast_safety.verify_static`を通し、`runner.build_restricted_globals()`の制限名前空間でテストごとにアラーム付きで走らせている。40,589件の意味ASTの全レンダリングを検証できるのはこの速さがあるからで、スニペット1つにつきコンテナを1つ立てると数桁遅くなる。`verify_in_sandbox()`（`code_demo.py --sandbox N`）が本物のコンテナでの抜き取り検査を行い、2つの経路が一致することを確認する。モデルが生成したコードは今までどおり常にコンテナで実行する。
+`sandbox/client.py`は「信頼できないモデル生成コードはコンテナの中でしか実行しない」と明記している。ここで実行するのはそのどちらでもない——このリポジトリの閉じた語彙から`code_generator.py`が生成したコードであり、実行前に`ast_safety.verify_static`を通し、`runner.build_restricted_globals()`の制限名前空間でテストごとにアラーム付きで走らせている。全意味ASTの全レンダリングを検証できるのはこの速さがあるからで、スニペット1つにつきコンテナを1つ立てると数桁遅くなる。`verify_in_sandbox()`（`code_demo.py --sandbox N`）が本物のコンテナでの抜き取り検査を行い、2つの経路が一致することを確認する。モデルが生成したコードは今までどおり常にコンテナで実行する。
 
 ## 4. 一気通貫（`code_demo.py`）
 
@@ -106,7 +122,7 @@ python semantic_ast/expressions_code/code_demo.py --limit 0          # 全件
 python semantic_ast/expressions_code/code_demo.py --sandbox 5        # Dockerでの抜き取り検査つき
 ```
 
-`semantic_ast/out/{train,val,test}.jsonl`（`demo.py`の出力）の意味ASTとテストを読み、スタイルを選んでレンダリングし、検証して`semantic_ast/out/code_{split}.jsonl`に保存し、読み戻して**保存されたコードが今の生成器から1バイト違わず再生成できるか**を確認する（生成器は決定的なので、ずれたらディスク上のコーパスが生成器と合っていないということ）。`demo.py`未実行なら、列挙した網羅サンプルだけを生成する。
+`semantic_ast/out/ast_{split}.jsonl`（`demo.py`の出力）の意味ASTとテストを読み、スタイルを選んでレンダリングし、検証して`semantic_ast/out/code_{split}.jsonl`に保存し、読み戻して**保存されたコードが今の生成器から1バイト違わず再生成できるか**を確認する（生成器は決定的なので、ずれたらディスク上のコーパスが生成器と合っていないということ）。`demo.py`未実行なら、列挙した網羅サンプルだけを生成する。
 
 同時に、コミット対象の`samples.jsonl` / `samples.md`（下記）も書き出す。
 
@@ -114,7 +130,7 @@ python semantic_ast/expressions_code/code_demo.py --sandbox 5        # Dockerで
 
 ```json
 {"spec_id": "train-000042",
- "semantic_ast": {"filter": ["even", "ge_k"], "map": [["mul_const", 2]], "order": "ascending"},
+ "semantic_ast": {"ops": [["filter", "even"], ["map", "mul_const", 2], ["order", "ascending"]]},
  "semantic_hash": "...",
  "codes": [{"code_style": "for_loop", "code": "def solve(...)...", "code_sha256": "...",
             "verification": {"syntax_ok": true, "ast_safe": true, "executable": true,

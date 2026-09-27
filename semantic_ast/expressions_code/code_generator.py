@@ -7,15 +7,28 @@ This is the second of homework.md's "独立した二つのプログラム": the 
 semantic AST, and this one emits the ``solve(xs, k)`` source that the model
 is trained to produce. The two are written independently on purpose -- they
 are cross-checked against each other in ``code_verifier.py``, which is what
-turns "the generator has a bug" into a test failure instead of into 40,589
+turns "the generator has a bug" into a test failure instead of into thousands of
 subtly wrong training examples.
 
 Everything here is rule-based, as homework.md requires (「正解の意味構造、コー
 ド、テストはルールベースで作成し、教師は自然言語（日本語）表現を増やす役割に
 限定する」): the teacher model never sees a line of this.
 
-Pipeline order is the schema's: filter -> map -> order -> slice. What the
-styles vary is *how* that pipeline is spelled, never what it computes.
+Order-preserving rendering
+--------------------------
+The code follows ``ast.ops`` left to right, one atomic operation at a time,
+so two ASTs that use the same operations in a different order always get
+different code in every style (schema.py, "Order is identity") -- even when
+the two orders happen to compute the same function.
+
+Consecutive ops are grouped into *stages* (``_stages``): a run of filters
+followed by a run of maps is one comprehension / ``for`` loop (the filters
+become one ``and``-joined condition, the maps one composed element
+expression), a run of slices is one chain of subscripts, and every order op
+is a stage of its own. Grouping never reorders anything: the conditions are
+joined, and the maps nested, in op order, and a filter that comes *after* a
+map starts a new stage. What the styles vary is *how* the stages are
+spelled, never what they compute or in which order.
 
 Operator precedence
 -------------------
@@ -53,7 +66,6 @@ from typing import Optional, Union
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from code_styles import (  # noqa: E402
-    COND_SWAPPED,
     FORM_COMPREHENSION,
     FORM_LOOP,
     ORDER_EXPLICIT,
@@ -64,7 +76,7 @@ from code_styles import (  # noqa: E402
     CodeStyle,
     select_styles,
 )
-from schema import MapOp, SemanticAST  # noqa: E402
+from schema import AtomicOp, SemanticAST  # noqa: E402
 
 INDENT = "    "
 
@@ -133,7 +145,8 @@ def _apply_map(expr: _Expr, name: str, arg: Optional[int]) -> _Expr:
     if name == "mul_const":
         return _Expr(f"{expr.wrapped(PREC_MUL)} * {arg}", PREC_MUL)
     if name == "negate":
-        return _Expr(f"-{expr.wrapped(PREC_UNARY)}", PREC_UNARY)
+        # a unary operand is parenthesised too: -(-x), not --x
+        return _Expr(f"-{expr.wrapped(PREC_POW)}", PREC_UNARY)
     if name == "abs":
         return _Expr(f"abs({expr.text})", PREC_ATOM)
     if name == "square":
@@ -143,62 +156,46 @@ def _apply_map(expr: _Expr, name: str, arg: Optional[int]) -> _Expr:
     raise CodeGenError(f"unknown map op: {name!r}")
 
 
-def element_expr(map_ops: Sequence[MapOp], variable: str) -> _Expr:
+def element_expr(maps: Sequence[AtomicOp], variable: str) -> _Expr:
     """The element expression of a comprehension / ``append`` call: every map
-    operation applied to ``variable`` in pipeline order."""
+    operation applied to ``variable`` in op order."""
     expr = _Expr(variable, PREC_ATOM)
-    for name, arg in map_ops:
-        expr = _apply_map(expr, name, arg)
+    for op in maps:
+        expr = _apply_map(expr, op.name, op.arg)
     return expr
 
 
-def condition_text(ast: SemanticAST, style: CodeStyle, variable: str) -> str:
-    """The ``if`` condition of a comprehension / loop body, or ``""`` when the
-    AST has no filter.
-
-    ``and`` is commutative and every predicate here is side-effect free and
-    total, so the 条件式の順序変更 axis can reverse the order without changing
-    the result (``x % k == 0`` is safe for the same reason the interpreter is:
-    ``k`` is contractually 1-10, never 0).
+def condition_text(filters: Sequence[AtomicOp], variable: str) -> str:
+    """The ``if`` condition of a comprehension / loop body: the predicates
+    joined with ``and`` in op order, or ``""`` for none (``x % k == 0`` is
+    safe for the same reason the interpreter is: ``k`` is contractually 1-10,
+    never 0).
     """
-    filters = tuple(ast.filters)
-    if style.condition_order == COND_SWAPPED:
-        filters = tuple(reversed(filters))
     parts = []
-    for name in filters:
-        template = FILTER_CONDITIONS.get(name)
+    for op in filters:
+        template = FILTER_CONDITIONS.get(op.name)
         if template is None:
-            raise CodeGenError(f"unknown filter op: {name!r}")
+            raise CodeGenError(f"unknown filter op: {op.name!r}")
         parts.append(template.format(x=variable))
     return " and ".join(parts)
 
 
-def _comprehension(ast: SemanticAST, style: CodeStyle, source: _Expr, *, with_filter: bool, with_map: bool) -> _Expr:
-    """``[<element> for <x> in <source> if <cond>]``."""
-    variable = style.names.element
-    element = element_expr(ast.map_ops if with_map else (), variable)
-    text = f"[{element.text} for {variable} in {source.text}"
-    if with_filter:
-        condition = condition_text(ast, style, variable)
-        if condition:
-            text += f" if {condition}"
-    return _Expr(text + "]", PREC_ATOM)
+def _order_expr(expr: _Expr, name: str, spelling: str) -> _Expr:
+    """Order op ``name`` applied to ``expr`` as an expression (the functional
+    spelling, used by the comprehension form and by staged variables).
 
-
-def _order_expr(expr: _Expr, order_op: str, spelling: str) -> _Expr:
-    """``order_op`` applied to ``expr`` as an expression (the functional
-    spelling, used by the comprehension form and by staged variables)."""
-    if order_op == "ascending":
+    Only ``reverse`` has a second spelling. Spelling ``descending`` as
+    ``sorted(...)[::-1]`` would make it byte-identical to ``ascending`` then
+    ``reverse`` -- two different ASTs, one code."""
+    if name == "ascending":
         return _Expr(f"sorted({expr.text})", PREC_ATOM)
-    if order_op == "descending":
-        if spelling == ORDER_EXPLICIT:
-            return _Expr(f"sorted({expr.text})[::-1]", PREC_ATOM)
+    if name == "descending":
         return _Expr(f"sorted({expr.text}, reverse=True)", PREC_ATOM)
-    if order_op == "reverse":
+    if name == "reverse":
         if spelling == ORDER_EXPLICIT:
             return _Expr(f"list(reversed({expr.text}))", PREC_ATOM)
         return _Expr(f"{expr.wrapped(PREC_ATOM)}[::-1]", PREC_ATOM)
-    raise CodeGenError(f"unknown order op: {order_op!r}")
+    raise CodeGenError(f"unknown order op: {name!r}")
 
 
 SLICE_SUBSCRIPTS: dict[str, str] = {
@@ -208,26 +205,93 @@ SLICE_SUBSCRIPTS: dict[str, str] = {
 }
 
 
-def _slice_expr(expr: _Expr, slice_ops: Sequence[str]) -> _Expr:
-    """Every slice operation as a chain of subscripts, in pipeline order."""
+def _slice_expr(expr: _Expr, slices: Sequence[AtomicOp]) -> _Expr:
+    """Every slice operation as a chain of subscripts, in op order."""
     text = expr.wrapped(PREC_ATOM)
-    for op in slice_ops:
-        subscript = SLICE_SUBSCRIPTS.get(op)
+    for op in slices:
+        subscript = SLICE_SUBSCRIPTS.get(op.name)
         if subscript is None:
-            raise CodeGenError(f"unknown slice op: {op!r}")
+            raise CodeGenError(f"unknown slice op: {op.name!r}")
         text += subscript
     return _Expr(text, PREC_ATOM)
+
+
+@dataclass(frozen=True)
+class _Stage:
+    """One statement-sized group of consecutive ops. ``kind`` is
+    ``"collect"`` (filters then maps: one comprehension or ``for`` loop),
+    ``"order"`` (one order op) or ``"slice"`` (consecutive slice ops)."""
+
+    kind: str
+    ops: tuple[AtomicOp, ...]
+
+    @property
+    def filters(self) -> tuple[AtomicOp, ...]:
+        return tuple(op for op in self.ops if op.category == "filter")
+
+    @property
+    def maps(self) -> tuple[AtomicOp, ...]:
+        return tuple(op for op in self.ops if op.category == "map")
+
+
+def _stages(ast: SemanticAST, fuse: bool = True) -> list[_Stage]:
+    """``ast.ops`` grouped into stages, in op order (module docstring).
+
+    With ``fuse``, a collect stage takes a run of filters followed by a run
+    of maps (it filters on the incoming values and maps the survivors,
+    exactly filters-then-maps), and a slice stage takes a run of slices.
+    Without it every op is a stage of its own."""
+    out: list[_Stage] = []
+    ops = ast.ops
+    i = 0
+    while i < len(ops):
+        op = ops[i]
+        if op.category in ("filter", "map"):
+            j = i + 1
+            if fuse:
+                if op.category == "filter":
+                    while j < len(ops) and ops[j].category == "filter":
+                        j += 1
+                while j < len(ops) and ops[j].category == "map":
+                    j += 1
+            out.append(_Stage("collect", ops[i:j]))
+        elif op.category == "slice":
+            j = i + 1
+            while fuse and j < len(ops) and ops[j].category == "slice":
+                j += 1
+            out.append(_Stage("slice", ops[i:j]))
+        else:
+            j = i + 1
+            out.append(_Stage("order", ops[i:j]))
+        i = j
+    return out
+
+
+def _comprehension(stage: _Stage, style: CodeStyle, source: _Expr) -> _Expr:
+    """``[<element> for <x> in <source> if <cond>]``."""
+    variable = style.names.element
+    element = element_expr(stage.maps, variable)
+    text = f"[{element.text} for {variable} in {source.text}"
+    condition = condition_text(stage.filters, variable)
+    if condition:
+        text += f" if {condition}"
+    return _Expr(text + "]", PREC_ATOM)
+
+
+def _stage_expr(stage: _Stage, style: CodeStyle, source: _Expr) -> _Expr:
+    """``stage`` applied to ``source`` as one expression."""
+    if stage.kind == "collect":
+        return _comprehension(stage, style, source)
+    if stage.kind == "order":
+        return _order_expr(source, stage.ops[0].name, style.order_spelling)
+    return _slice_expr(source, stage.ops)
 
 
 def single_expression(ast: SemanticAST, style: CodeStyle) -> _Expr:
     """The whole pipeline as one expression (the ``TEMP_NONE`` body)."""
     expr = _Expr("xs", PREC_ATOM)
-    if ast.filters or ast.map_ops:
-        expr = _comprehension(ast, style, expr, with_filter=True, with_map=True)
-    if ast.order_op is not None:
-        expr = _order_expr(expr, ast.order_op, style.order_spelling)
-    if ast.slice_ops:
-        expr = _slice_expr(expr, ast.slice_ops)
+    for stage in _stages(ast):
+        expr = _stage_expr(stage, style, expr)
     return expr
 
 
@@ -246,19 +310,21 @@ COMMENT_SLICE = "# 必要な範囲を取り出す"
 
 
 def _overview_comment(ast: SemanticAST) -> str:
-    """The single comment a one-expression body can carry: the pipeline's
-    active categories, in order."""
-    return "# " + "→".join(CATEGORY_LABELS[c] for c in ast.active_categories()) + "の順に処理する"
+    """The single comment a one-expression body can carry: the category of
+    every op, in execution order."""
+    return "# " + "→".join(CATEGORY_LABELS[c] for c in ast.categories()) + "の順に処理する"
 
 
-def _collect_comment(ast: SemanticAST) -> str:
-    if ast.filters and ast.map_ops:
+def _stage_comment(stage: _Stage) -> str:
+    if stage.kind == "order":
+        return COMMENT_ORDER
+    if stage.kind == "slice":
+        return COMMENT_SLICE
+    if stage.filters and stage.maps:
         return COMMENT_FILTER_MAP
-    if ast.filters:
+    if stage.filters:
         return COMMENT_FILTER
-    if ast.map_ops:
-        return COMMENT_MAP
-    return COMMENT_COPY
+    return COMMENT_MAP
 
 
 # ---------------------------------------------------------------------------
@@ -272,6 +338,7 @@ class _Body:
     def __init__(self, style: CodeStyle) -> None:
         self.style = style
         self.lines: list[str] = []
+        self.declared: set[str] = set()
 
     def comment(self, text: str) -> None:
         if self.style.comments:
@@ -280,127 +347,116 @@ class _Body:
     def line(self, text: str) -> None:
         self.lines.append(text)
 
-    def annotated(self, variable: str) -> str:
-        """``variable`` with the list annotation, for a *first* assignment."""
-        return f"{variable}{LIST_ANNOTATION}" if self.style.annotations else variable
+    def assign(self, variable: str, text: str) -> None:
+        """``variable = text``, with the list annotation on the variable's
+        first assignment."""
+        target = variable
+        if variable not in self.declared:
+            self.declared.add(variable)
+            if self.style.annotations:
+                target = f"{variable}{LIST_ANNOTATION}"
+        self.line(f"{target} = {text}")
 
     def render(self) -> str:
         return "".join(f"{INDENT}{line}\n" for line in self.lines)
 
 
-def _stage_names(ast: SemanticAST, style: CodeStyle) -> dict[str, str]:
-    """Variable name per pipeline category. ``TEMP_STAGED`` gives each
-    category its own name; every other setting reuses one accumulator."""
-    if style.temporaries == TEMP_STAGED:
-        by_index = dict(zip(("filter", "map", "order", "slice"), style.names.stages))
-        return {category: by_index[category] for category in ("filter", "map", "order", "slice")}
-    return {category: style.names.result for category in ("filter", "map", "order", "slice")}
+# Index into ``NameScheme.stages`` per stage kind (a collect stage without
+# filters is a map stage).
+_STAGE_NAME_INDEX = {"filter": 0, "map": 1, "order": 2, "slice": 3}
+
+
+class _Namer:
+    """Target variable per stage. ``TEMP_STAGED`` gives each stage its own
+    name (a second stage of the same kind gets ``_2``, ``_3``); every other
+    setting reuses one accumulator."""
+
+    def __init__(self, style: CodeStyle) -> None:
+        self.style = style
+        self.used: dict[str, int] = {}
+
+    def target(self, stage: _Stage) -> str:
+        if self.style.temporaries != TEMP_STAGED:
+            return self.style.names.result
+        kind = stage.kind if stage.kind != "collect" else ("filter" if stage.filters else "map")
+        base = self.style.names.stages[_STAGE_NAME_INDEX[kind]]
+        self.used[base] = self.used.get(base, 0) + 1
+        count = self.used[base]
+        return base if count == 1 else f"{base}_{count}"
 
 
 def _comprehension_body(ast: SemanticAST, style: CodeStyle) -> _Body:
     body = _Body(style)
-    staged = style.temporaries == TEMP_STAGED
-    names = _stage_names(ast, style)
-    first_assignment = True
-
-    def assign(variable: str, expr: _Expr) -> None:
-        nonlocal first_assignment
-        target = body.annotated(variable) if first_assignment else variable
-        body.line(f"{target} = {expr.text}")
-        first_assignment = False
-
+    namer = _Namer(style)
     current = _Expr("xs", PREC_ATOM)
-    if staged:
-        # filter and map become separate comprehensions -- the point of the
-        # staged style is one statement per pipeline stage.
-        if ast.filters:
-            body.comment(COMMENT_FILTER)
-            assign(names["filter"], _comprehension(ast, style, current, with_filter=True, with_map=False))
-            current = _Expr(names["filter"], PREC_ATOM)
-        if ast.map_ops:
-            body.comment(COMMENT_MAP)
-            assign(names["map"], _comprehension(ast, style, current, with_filter=False, with_map=True))
-            current = _Expr(names["map"], PREC_ATOM)
-    elif ast.filters or ast.map_ops:
-        body.comment(_collect_comment(ast))
-        assign(names["filter"], _comprehension(ast, style, current, with_filter=True, with_map=True))
-        current = _Expr(names["filter"], PREC_ATOM)
-
-    if ast.order_op is not None:
-        body.comment(COMMENT_ORDER)
-        assign(names["order"], _order_expr(current, ast.order_op, style.order_spelling))
-        current = _Expr(names["order"], PREC_ATOM)
-
-    if ast.slice_ops:
-        body.comment(COMMENT_SLICE)
-        assign(names["slice"], _slice_expr(current, ast.slice_ops))
-        current = _Expr(names["slice"], PREC_ATOM)
-
+    # staged: one statement per op -- the point of the staged style is one
+    # statement per pipeline step.
+    for stage in _stages(ast, fuse=style.temporaries != TEMP_STAGED):
+        body.comment(_stage_comment(stage))
+        target = namer.target(stage)
+        body.assign(target, _stage_expr(stage, style, current).text)
+        current = _Expr(target, PREC_ATOM)
     body.line(f"return {current.text}")
     return body
 
 
-def _order_statements(variable: str, order_op: str, spelling: str) -> list[str]:
-    """``order_op`` as in-place statements on ``variable`` -- the loop form's
-    spelling, and the half of homework.md's 「``reverse=True``と逆順操作」 axis
-    that the expression form cannot show."""
-    if order_op == "ascending":
+def _order_statements(variable: str, name: str, spelling: str) -> list[str]:
+    """Order op ``name`` as in-place statements on ``variable`` -- the loop
+    form's spelling, and the half of homework.md's 「``reverse=True``と逆順操
+    作」 axis that the expression form cannot show."""
+    if name == "ascending":
         return [f"{variable}.sort()"]
-    if order_op == "descending":
-        if spelling == ORDER_EXPLICIT:
-            return [f"{variable}.sort()", f"{variable}.reverse()"]
+    if name == "descending":
         return [f"{variable}.sort(reverse=True)"]
-    if order_op == "reverse":
+    if name == "reverse":
         if spelling == ORDER_EXPLICIT:
             return [f"{variable} = {variable}[::-1]"]
         return [f"{variable}.reverse()"]
-    raise CodeGenError(f"unknown order op: {order_op!r}")
+    raise CodeGenError(f"unknown order op: {name!r}")
 
 
 def _loop_body(ast: SemanticAST, style: CodeStyle) -> _Body:
     body = _Body(style)
     staged = style.temporaries == TEMP_STAGED
-    names = _stage_names(ast, style)
+    namer = _Namer(style)
     variable = style.names.element
+    stages = _stages(ast)
 
-    # The accumulator the loop fills. With neither filter nor map there is
-    # nothing to loop over element by element, so the list is copied instead
-    # (a copy, not an alias: solve must never hand back or mutate ``xs``).
-    if ast.filters:
-        collected = names["filter"]
-    elif ast.map_ops:
-        collected = names["map"]
-    else:
-        collected = style.names.result  # a plain copy belongs to no stage
-    body.comment(_collect_comment(ast))
-    if ast.filters or ast.map_ops:
-        body.line(f"{body.annotated(collected)} = []")
-        body.line(f"for {variable} in xs:")
-        element = element_expr(ast.map_ops, variable)
-        condition = condition_text(ast, style, variable)
-        if condition:
-            body.line(f"{INDENT}if {condition}:")
-            body.line(f"{INDENT}{INDENT}{collected}.append({element.text})")
-        else:
-            body.line(f"{INDENT}{collected}.append({element.text})")
-    else:
-        body.line(f"{body.annotated(collected)} = list(xs)")
-    current = collected
+    # When the pipeline does not start with a loop, the list is copied first
+    # (a copy, not an alias: solve must never hand back or mutate ``xs``, and
+    # the order statements below sort in place).
+    current = "xs"
+    if stages[0].kind != "collect":
+        current = style.names.result  # a plain copy belongs to no stage
+        body.comment(COMMENT_COPY)
+        body.assign(current, "list(xs)")
 
-    if ast.order_op is not None:
-        body.comment(COMMENT_ORDER)
-        if staged:
-            body.line(f"{names['order']} = {_order_expr(_Expr(current), ast.order_op, style.order_spelling).text}")
-            current = names["order"]
-        else:
-            for line in _order_statements(current, ast.order_op, style.order_spelling):
+    for stage in stages:
+        body.comment(_stage_comment(stage))
+        if stage.kind == "collect":
+            target = namer.target(stage)
+            # a loop cannot fill the list it iterates over, so a reused
+            # accumulator is rebuilt in a buffer and rebound afterwards
+            fill = style.names.buffer if target == current else target
+            body.assign(fill, "[]")
+            body.line(f"for {variable} in {current}:")
+            element = element_expr(stage.maps, variable)
+            condition = condition_text(stage.filters, variable)
+            if condition:
+                body.line(f"{INDENT}if {condition}:")
+                body.line(f"{INDENT}{INDENT}{fill}.append({element.text})")
+            else:
+                body.line(f"{INDENT}{fill}.append({element.text})")
+            if fill != target:
+                body.assign(target, fill)
+            current = target
+        elif stage.kind == "order" and not staged:
+            for line in _order_statements(current, stage.ops[0].name, style.order_spelling):
                 body.line(line)
-
-    if ast.slice_ops:
-        body.comment(COMMENT_SLICE)
-        target = names["slice"] if staged else current
-        body.line(f"{target} = {_slice_expr(_Expr(current), ast.slice_ops).text}")
-        current = target
+        else:
+            target = namer.target(stage)
+            body.assign(target, _stage_expr(stage, style, _Expr(current)).text)
+            current = target
 
     body.line(f"return {current}")
     return body
@@ -410,13 +466,11 @@ def render(ast: SemanticAST, style: CodeStyle) -> str:
     """The ``solve(xs, k)`` source for ``ast`` in ``style``.
 
     Semantics are the style's only invariant: every style renders the same
-    pipeline, so any two renderings of one semantic AST agree with
-    ``reference_interpreter.interpret`` on every input (``code_verifier.py``
-    checks exactly that).
+    ops in the same order, so any two renderings of one semantic AST agree
+    with ``reference_interpreter.interpret`` on every input
+    (``code_verifier.py`` checks exactly that), and no rendering of one AST
+    equals any rendering of another.
     """
-    if not ast.active_categories():  # pragma: no cover - schema forbids it
-        raise CodeGenError(f"semantic AST has no active category: {ast.to_dict()}")
-
     signature = SIGNATURE_ANNOTATED if style.annotations else SIGNATURE_BARE
     if style.form == FORM_LOOP:
         body = _loop_body(ast, style)
@@ -496,7 +550,7 @@ def code_record(
     """One JSONL record: the semantic AST and every rendering of it.
 
     Field names line up with homework.md's データレコード so these records
-    join onto ``out/{train,val,test}.jsonl`` (and onto
+    join onto ``out/ast_{split}.jsonl`` (and onto
     ``out/instructions_{split}.jsonl``) by ``spec_id`` / ``semantic_hash``.
     homework.md's record carries a single ``reference_code`` + ``code_style``
     pair; here that is ``codes[0]`` (the catalogue's first applicable style),

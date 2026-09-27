@@ -1,5 +1,4 @@
-"""Dedup, stratified train/val/test split, leakage check, and per-label
-capping -- all operating at the semantic-AST level, *before* any Japanese
+"""Dedup, stratified train/val/test-set split and leakage check -- all operating at the semantic-AST level, *before* any Japanese
 instruction or code variant is generated.
 
 homework.md is explicit that this ordering matters: "意味ASTを分割した後で
@@ -7,7 +6,7 @@ homework.md is explicit that this ordering matters: "意味ASTを分割した後
 するため注意する". Because the split unit here is the whole semantic AST
 (never an individual instruction/code sample), every instruction and code
 variant generated later from a given AST inherits that AST's split
-assignment wholesale, so leakage across train/val/test can only happen if
+assignment wholesale, so leakage across the splits can only happen if
 the *same* semantic AST is (a) duplicated before splitting, or (b) placed
 in two splits at once. ``dedup_by_hash`` prevents (a); ``check_no_leakage``
 is a cheap, independent assertion that (b) never happened -- this is the
@@ -46,12 +45,14 @@ def dedup_by_hash(asts: Sequence[SemanticAST]) -> list[SemanticAST]:
 
 @dataclass(frozen=True)
 class SplitRatios:
-    train: float = 0.8
+    """How the ASTs left after carving out the three test sets are divided
+    between training and validation."""
+
+    train: float = 0.9
     val: float = 0.1
-    test: float = 0.1
 
     def __post_init__(self) -> None:
-        total = self.train + self.val + self.test
+        total = self.train + self.val
         if abs(total - 1.0) > 1e-9:
             raise ValueError(f"ratios must sum to 1.0, got {total}")
 
@@ -70,12 +71,19 @@ def _partition(
 ) -> dict[str, list[SemanticAST]]:
     """Split every ``label_fn`` group into ``fractions`` (name -> share of the
     group, taken in mapping order); whatever is left goes to ``remainder``.
-    Shared by ``stratified_split`` and ``build_eval_splits``."""
+    Shared by ``stratified_split`` and ``build_eval_splits``.
+
+    Groups are small (a few ASTs per label), so rounding each group's share
+    on its own would round a 5% share to 0 almost everywhere. Instead the
+    fractional part is carried from group to group: each group gets the
+    floor or ceiling of its share, and every split's total matches its
+    fraction of all ASTs to within one."""
     groups: dict[tuple, list[SemanticAST]] = defaultdict(list)
     for ast in asts:
         groups[_label_key(ast, label_fn)].append(ast)
 
     out: dict[str, list[SemanticAST]] = {name: [] for name in (remainder, *fractions)}
+    expected = {name: 0.0 for name in fractions}  # running target per split
     for key, group in groups.items():
         rng = random.Random(repr((seed, key)))
         shuffled = list(group)
@@ -83,7 +91,8 @@ def _partition(
         start = len(shuffled)
         # carve from the tail so the remainder keeps the head of the shuffle
         for name, share in reversed(list(fractions.items())):
-            n = min(round(len(shuffled) * share), start)
+            expected[name] += len(shuffled) * share
+            n = min(max(round(expected[name]) - len(out[name]), 0), start)
             start -= n
             out[name].extend(shuffled[start : start + n])
         out[remainder].extend(shuffled[:start])
@@ -96,16 +105,16 @@ def stratified_split(
     seed: int = 0,
     label_fn: LabelFn = default_label_fn,
 ) -> dict[str, list[SemanticAST]]:
-    """Split ``asts`` into train/val/test, keeping the ``label_fn``
-    distribution (num_categories, which ops are used, ...) approximately
-    proportional across all three splits rather than skewed by chance.
+    """Split ``asts`` into train/val, keeping the ``label_fn`` distribution
+    (the category sequence of the ops) approximately proportional across
+    both splits rather than skewed by chance.
 
     Each semantic AST is assigned to exactly one split -- this is what
     makes leakage structurally hard to introduce later, per this module's
     docstring.
     """
     return _partition(
-        asts, {"val": ratios.val, "test": ratios.test}, "train", seed, label_fn
+        asts, {"val": ratios.val}, "train", seed, label_fn
     )
 
 
@@ -126,48 +135,29 @@ def check_no_leakage(splits: dict[str, list[SemanticAST]]) -> None:
             owner[h] = split_name
 
 
-def cap_per_label(
-    asts: Sequence[SemanticAST],
-    max_per_label: int,
-    label_fn: LabelFn = default_label_fn,
-    seed: int = 0,
-) -> list[SemanticAST]:
-    """Cap the number of semantic ASTs sharing the same label to
-    ``max_per_label`` (homework.md: "均等抽出のためにラベルごとに上限を設
-    けておく"), so that e.g. 1-category ASTs don't drown out 3-category
-    ones just because there happen to be more of them. Selection within an
-    over-represented label is randomized (seeded) rather than
-    order-dependent."""
-    groups: dict[tuple, list[SemanticAST]] = defaultdict(list)
-    for ast in asts:
-        groups[_label_key(ast, label_fn)].append(ast)
-
-    out: list[SemanticAST] = []
-    for key, group in groups.items():
-        if len(group) <= max_per_label:
-            out.extend(group)
-            continue
-        rng = random.Random(repr((seed, key)))
-        out.extend(rng.sample(group, max_per_label))
-    return out
-
-
 # ---------------------------------------------------------------------------
-# homework.md's four test sets
+# homework.md's test sets
 # ---------------------------------------------------------------------------
+#
+# There is no catch-all ``test`` split: every AST held out of training goes to
+# exactly one of the three test sets, each of which measures one thing of its
+# own. A plain "unseen AST" test would only repeat what all three already
+# measure (every test AST is unseen in training).
 
-TRAIN_SPLITS: tuple[str, ...] = ("train", "val", "test")
+TRAIN_SPLITS: tuple[str, ...] = ("train", "val")
 PARAPHRASE_SPLIT = "test_paraphrase"
 COMPOSITIONAL_SPLIT = "test_compositional"
 BOUNDARY_SPLIT = "test_boundary"
-ALL_SPLITS: tuple[str, ...] = (*TRAIN_SPLITS, PARAPHRASE_SPLIT, COMPOSITIONAL_SPLIT, BOUNDARY_SPLIT)
+TEST_SPLITS: tuple[str, ...] = (PARAPHRASE_SPLIT, COMPOSITIONAL_SPLIT, BOUNDARY_SPLIT)
+ALL_SPLITS: tuple[str, ...] = (*TRAIN_SPLITS, *TEST_SPLITS)
 
 # Pairs of atomic operations (``SemanticAST.op_tags`` spelling) that never
-# occur together in train/val/test/paraphrase/boundary: every AST containing
+# occur together in train/val/paraphrase/boundary: every AST containing
 # both goes to ``test_compositional``. Each operation still occurs elsewhere
 # in train, so the test asks whether the model can combine two skills it has
-# only seen apart -- homework.md's example is 偶数抽出 x 降順整列. All four are
-# cross-category and each holds back roughly 500-800 of the 40,589 ASTs.
+# only seen apart -- homework.md's example is 偶数抽出 x 降順整列. A pair
+# matches in either order (``op_tags`` is order-free). All four are
+# cross-category and each holds back 140 of the 14,424 ASTs (554 together).
 HOLDOUT_PAIRS: tuple[tuple[str, str], ...] = (
     ("filter:even", "order:descending"),
     ("filter:positive", "order:reverse"),
@@ -178,8 +168,8 @@ HOLDOUT_PAIRS: tuple[tuple[str, str], ...] = (
 
 @dataclass(frozen=True)
 class EvalRatios:
-    """Share of the (non-compositional) pool given to each extra test set.
-    ``train``/``val``/``test`` are then split 80/10/10 from what remains."""
+    """Share of the (non-compositional) pool given to each sampled test set.
+    ``train``/``val`` are then split by ``SplitRatios`` from what remains."""
 
     paraphrase: float = 0.05
     boundary: float = 0.05
@@ -222,15 +212,18 @@ def build_eval_splits(
     seed: int = 0,
     label_fn: LabelFn = default_label_fn,
 ) -> dict[str, list[SemanticAST]]:
-    """Six disjoint groups of semantic ASTs (``ALL_SPLITS``):
+    """Five disjoint groups of semantic ASTs (``ALL_SPLITS``):
 
     * ``test_compositional`` -- every AST containing a held-out operation pair;
     * ``test_paraphrase`` / ``test_boundary`` -- stratified slices of the rest.
       Their ASTs are rendered with the reserved Japanese templates
       (``ja_generator.template_pools``) and tested with boundary inputs
       (``testcases.generate_boundary_test_cases``) respectively;
-    * ``train`` / ``val`` / ``test`` -- what remains, split by ``ratios``;
-      ``test`` is the 通常テスト (same operations, unseen ASTs and inputs).
+    * ``train`` / ``val`` -- what remains, split by ``ratios``.
+
+    The assignment of every AST is fixed by ``seed`` alone, so a caller may
+    write out any subset of the test sets (``demo.py --splits``) and each one
+    comes out the same as when all are generated together.
 
     Dedup first, so the groups are disjoint by hash; ``check_no_leakage`` and
     ``check_holdout_pairs`` are run before returning.
