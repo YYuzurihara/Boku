@@ -92,11 +92,11 @@ https://drive.google.com/drive/folders/1WSb8G-XjItU6msLVw1YDv_k-h4S3xfjU?usp=dri
      --tokenizer mlruns/1/<run_id>/artifacts/tokenizer/tokenizer.json
    ```
 
-   3つのテスト用 split から各200問を解かせ、pass@1・pass@5 などを表示する。結果は `final.pt` と同じディレクトリの `eval.json` に保存される。オプションと指標の意味は下の「8. 評価」を参照。
+   3つのテスト用 split から各200問を解かせ、pass@1・pass@5 などを表示する。結果は `final.pt` と同じディレクトリの `eval.json` に保存される。オプションと指標の意味は下の「9. 評価」を参照。
 
 ## データ合成から学習までの実行手順
 
-上から順に実行する（4の参照インタプリタのテストはいつ実行してもよい）。**コード生成（2）は日本語指示文の生成（3の(c)）より先に行う**こと。`ja_demo.py` は意味ASTごとのコード件数を `code_{split}.jsonl` から読み、それと同じ数の日本語文を作るため。
+上から順に実行する（5の参照インタプリタのテストはいつ実行してもよい）。**コード生成（3）は日本語指示文の生成（4の(c)）より先に行う**こと。`ja_demo.py` は意味ASTごとのコード件数を `code_{split}.jsonl` から読み、それと同じ数の日本語文を作るため。
 
 ### 1. 意味ASTの生成
 
@@ -116,9 +116,23 @@ uv run python semantic_ast/demo.py
 | `test_compositional` | 554 | 組合せ汎化テスト：訓練では別々にしか現れない演算の組（例：`filter:even` と `order:descending`）を含む問題 |
 | `test_boundary` | 694 | 境界値テスト：空リスト・要素1個・全要素が条件を満たさない、などの入力 |
 
-各 split にどの意味ASTが入るかはシードだけで決まる。そのため、1・2・3(c)・5・8 のスクリプトは `--splits test_boundary` のように一部の split だけを対象にしても、全部まとめて実行したときと同じ中身になる。
+各 split にどの意味ASTが入るかはシードだけで決まる。そのため、1・3・4(c)・6・9 のスクリプトは `--splits test_boundary` のように一部の split だけを対象にしても、全部まとめて実行したときと同じ中身になる。
 
-### 2. コード生成
+### 2. 漏洩検査
+
+1 の `demo.py` が split 直後に自動実行するため、独立に実行するコマンドはない。何を保証しているかは次の2つ。
+
+- `check_no_leakage`：同じ `semantic_hash` の意味ASTが2つ以上のsplitに現れないことを確認する。
+- `check_holdout_pairs`：組合せ汎化テスト用に取り置いた演算の組（例：`filter:even` と `order:descending`）が `test_compositional` 以外に漏れていないこと、かつ各演算単体は `train` に含まれていることを確認する。
+
+検査に失敗すると `LeakageError` で止まる。成功すると 1 の実行時に標準出力へ次の2行が出る。
+
+```
+leakage check passed: no semantic AST hash appears in more than one split
+holdout check passed: no held-out operation pair occurs outside test_compositional
+```
+
+### 3. コード生成
 
 ```bash
 uv run python semantic_ast/expressions_code/code_demo.py --limit 0
@@ -126,7 +140,7 @@ uv run python semantic_ast/expressions_code/code_demo.py --limit 0
 
 各意味ASTから複数スタイルのPythonコードを生成し、参照インタプリタと突き合わせて検証してから `semantic_ast/out/code_{split}.jsonl` に保存する。`--limit 0` で全件（省略すると各split 200件だけ）。`--sandbox 5` を付けると、5件をDockerサンドボックスでも抜き取り検査する。
 
-### 3. 日本語表現の生成と人間によるチェック
+### 4. 日本語表現の生成と人間によるチェック
 
 日本語は2段階で作る。教師モデル（Qwen3-4B-AWQ, vLLM）には原子操作の言い方（表現辞書）だけを問い合わせ、指示文はその辞書から決定的に組み立てる。
 
@@ -152,7 +166,7 @@ uv run python semantic_ast/expressions_ja/ja_teacher.py --report-contract --out 
 
 `candidates.json`（教師モデルの生の出力）と `generation_log.jsonl`（生成ログ）はチェック対象ではない。必要なら記録として参照できるが、無くても以降の手順には影響しない。
 
-**(c) 日本語指示文の生成（2のコード生成の後）**
+**(c) 日本語指示文の生成（3のコード生成の後）**
 
 ```bash
 uv run python semantic_ast/expressions_ja/ja_demo.py
@@ -160,7 +174,7 @@ uv run python semantic_ast/expressions_ja/ja_demo.py
 
 `filtered.json`（`--dictionary` で変更可）を使って各意味ASTの日本語指示文をコード件数分生成し、`semantic_ast/out/instructions_{split}.jsonl` に保存する。保存後に読み戻して、辞書から同じ文が再現できるかを検証する。
 
-### 4. 参照インタプリタのテスト
+### 5. 参照インタプリタのテスト
 
 ```bash
 uv run python -m unittest discover -s semantic_ast/tests -p "test_reference_interpreter.py" -v
@@ -168,7 +182,7 @@ uv run python -m unittest discover -s semantic_ast/tests -p "test_reference_inte
 
 `semantic_ast/` の単体テストをすべて実行する場合は `-p` を外す（GPU・Docker不要）。
 
-### 5. 日本語とコードを結合したコーパスの作成
+### 6. 日本語とコードを結合したコーパスの作成
 
 ```bash
 uv run python data/corpus_generator.py
@@ -176,7 +190,7 @@ uv run python data/corpus_generator.py
 
 `semantic_ast/out/` の `ast_*` / `code_*` / `instructions_*` を `spec_id` で結合し、split ごとに `data/{split}.jsonl`（`train.jsonl`・`val.jsonl`・`test_*.jsonl` の5ファイル）を作る。1行が1意味ASTで、`codes[i]` と `instruction_ja[i]` が対になる。`--splits test_boundary` のように一部のsplitだけ作ることもできる。
 
-### 6. トークナイザの学習
+### 7. トークナイザの学習
 
 ```bash
 uv run python tokenizer/demo.py --percent 100 --vocab-size 2048
@@ -184,7 +198,7 @@ uv run python tokenizer/demo.py --percent 100 --vocab-size 2048
 
 `data/train.jsonl` だけから byte-level BPE トークナイザを学習し（val やテストの文面が語彙に混ざらないようにするため）、`tokenizer/out/tokenizer.json` に保存する。`--percent` は学習に使う train レコードの割合（既定10）。`--vocab-size` はモデル設定の `vocab_size` と一致させる。
 
-### 7. モデルの学習
+### 8. モデルの学習
 
 ```bash
 uv run python model/train.py
@@ -214,7 +228,7 @@ uv run mlflow ui --backend-store-uri sqlite:///model/out/mlflow.db
 | `[data]` | `train` `val` `tokenizer` `cache_dir` | 入力ファイルのパス。`train` で学習し、`val` で検証損失を計算する（テスト用の split は学習では使わない） |
 | `[mlflow]` | `tracking_uri` `experiment` | MLflowの記録先 |
 
-### 8. 評価
+### 9. 評価
 
 ```bash
 uv run python model/evaluate.py --ckpt model/out/checkpoints/<run_id>/final.pt
