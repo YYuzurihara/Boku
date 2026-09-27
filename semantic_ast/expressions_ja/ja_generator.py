@@ -3,25 +3,30 @@ semantic AST (ja_generator_plan.md "2. 組み合わせ型（テンプレート�
 
 This is the deterministic half of the two-stage design: the teacher model is
 only ever asked for *atomic* expressions (one prompt per dictionary key,
-ja_teacher.py), and every one of the 40,589 semantic ASTs is turned into
-Japanese here, by
+ja_teacher.py), and every semantic AST is turned into Japanese here, by
 rule, by sampling one approved expression per primitive and concatenating
-the clauses in the pipeline order ``filter -> map -> order -> slice``.
+the clauses in the AST's op order.
 
-Composition rules, straight from ja_generator_plan.md section 2:
+A semantic AST is an ordered sequence of 1-3 atomic ops, repeats allowed
+(schema.py). The sentence always tells the ops in exactly that order: two
+ASTs that differ only in order are different problems with different code,
+so they must get different instructions, and an instruction that told the
+ops in another order -- even an order that computes the same function --
+would describe the other AST.
 
-* filter (2.1): the ADNOMINAL fragments of all filter predicates are
-  concatenated as-is and substituted into ``frame:filter_verb``'s ``{frag}``.
-  The plan leaves their order open ("順不同"); this module fixes it (see
-  ``ADNOMINAL_GROUP_ORDER``) because stacked 連体修飾 are *not* order-free
-  in Japanese.
-* map / slice (2.2): an ordered chain of ACTION_PAIRs; every op but the last
-  in the chain uses the ``te`` form plus the connective ``から``
-  ("kを加えてから2倍する").
-* order (2.3): a single ACTION_PAIR, no chaining.
-* across categories (2.4): the last active category uses ``terminal``,
-  every earlier one uses ``te``; ``frame:opening`` leads and
-  ``frame:closing`` closes.
+Composition rules, from ja_generator_plan.md section 2:
+
+* filter (2.1): each filter op is a clause of its own -- its ADNOMINAL
+  fragment substituted into ``frame:filter_verb``'s ``{frag}``. Consecutive
+  filters are *not* stacked into one 連体修飾 (「k以上の偶数の要素」):
+  stacked modifiers have a natural reading order of their own, which would
+  hide the op order the AST fixes.
+* map / slice (2.2): a run of consecutive map ops (or slice ops) is an
+  ordered chain of ACTION_PAIRs; every op but the last in the chain uses the
+  ``te`` form plus the connective ``から`` ("kを加えてから2倍する").
+* order (2.3): a single ACTION_PAIR per op, no chaining.
+* across clauses (2.4): the last clause uses ``terminal``, every earlier
+  one uses ``te``; ``frame:opening`` leads and ``frame:closing`` closes.
 * placeholders (2.5): ``k`` stays the literal string ``k``; ``N`` is replaced
   by ``mul_const``'s actual constant.
 
@@ -34,6 +39,30 @@ that) does not produce ``、、``. Nothing else about a stored expression is
 rewritten -- an odd expression stays odd, visibly, which is the point of the
 human approval step.
 
+Sentence types (文型)
+--------------------
+The rules above are the ``sequential`` type. A single sentence shape that
+always walks the ops left to right teaches the model that clause position
+*is* the order, so a rendering picks a **sentence type** (``TEMPLATES``),
+each of which states the op order explicitly, in a different way:
+
+  ``sequential``  連用連接型  「A-te、B-te、C-terminal」+ closing
+  ``ordinal``     順序副詞型  「まずA-te、次にB-te、最後にC-terminal」+ closing
+  ``procedure``   手順列挙型  「次の手順で処理する」+ closing +
+                              「まず、A-terminal。次に、B-terminal。…」
+  ``goal_first``  後段先行型  「Z-terminal」+ closing +
+                              「ただし、Z-terminal前に、A-te、…Y-terminalこと。」
+
+``ordinal``/``procedure``/``goal_first`` work on *units* -- one per op, so
+a map or slice chain is split into its ops (「まずkを加えて、次に2倍して」)
+-- and need at least two of them. The glue they add
+(``GLUE``: まず/次に/最後に, 前に, こと, ...) is fixed here, like 「から」:
+it is grammar, not vocabulary, and only ever attaches to the two forms the
+contract below already guarantees -- a ``terminal`` (終止形 = 連体形, so it
+takes 「前に」「こと」「。」 and the closing's noun) and a ``te`` (takes
+「、」). A dictionary that satisfies ``contract_problems`` therefore
+composes under every type.
+
 Division of labour with the teacher model: the model only ever writes
 *atomic* expressions, so every problem that is structural -- a clause that
 cannot attach to the next one -- has to be the joining rules' problem, not
@@ -41,7 +70,7 @@ the model's. The rules above are stated so that a dictionary meeting the
 contract in ``contract_problems`` always composes into grammatical Japanese;
 ``contract_problems`` names that contract and checks the mechanically
 checkable half of it, so a violation is reported against the dictionary
-entry instead of showing up as a broken sentence 40,589 times.
+entry instead of showing up as a broken sentence in every AST that uses it.
 """
 
 from __future__ import annotations
@@ -60,28 +89,45 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from ja_dictionary import ExpressionDictionary  # noqa: E402
 from ja_prompts import ACTION_PAIR, ADNOMINAL, FRAG_PLACEHOLDER, PRIMITIVES, TEXT  # noqa: E402
-from schema import FILTER_OP_TO_GROUP, SemanticAST  # noqa: E402
+from schema import AtomicOp, SemanticAST  # noqa: E402
 
 CLAUSE_SEPARATOR = "、"
+SENTENCE_END = "。"
 CHAIN_CONNECTIVE = "から"  # ja_generator_plan.md 2.2: te形 + から
 CONST_PLACEHOLDER = "N"  # ja_generator_plan.md 2.5 (mul_const only)
 
 TERMINAL = "terminal"
 TE = "te"
 
-# Reading order of the stacked 連体修飾 fragments of a multi-predicate filter
-# (schema.py caps it at two, one per mutually-exclusive group).
-#
-# ``filters`` is a set semantically -- AND is commutative, and
-# ``schema.canonical_json`` sorts it for hashing -- so the renderer is free to
-# choose the order it reads them in, and it has to: stacked 連体修飾 are not
-# order-free in Japanese. The modifier that classifies the element sits
-# closest to the noun and the one that restricts its range sits outermost, so
-# 「k以上の偶数の要素」 reads naturally where 「偶数のk以上の要素」 does not.
-# generator.py enumerates predicates in schema.py's vocabulary order (parity
-# before k_compare), which is exactly the wrong way round, so the order is
-# imposed here rather than left to enumeration order.
-ADNOMINAL_GROUP_ORDER: tuple[str, ...] = ("k_compare", "sign", "k_multiple", "parity")
+# Sentence types (module docstring). Order matters: a rendering records the
+# index into this tuple.
+SEQUENTIAL = "sequential"
+ORDINAL = "ordinal"
+PROCEDURE = "procedure"
+GOAL_FIRST = "goal_first"
+TEMPLATES: tuple[str, ...] = (SEQUENTIAL, ORDINAL, PROCEDURE, GOAL_FIRST)
+MULTI_UNIT_TEMPLATES = frozenset({ORDINAL, PROCEDURE, GOAL_FIRST})
+
+# Fixed glue of the sentence types. Every entry attaches to a terminal / te
+# form only as described in the module docstring, so none of them can break
+# a join the contract allows.
+GLUE: dict[str, tuple[str, ...]] = {
+    # ordinal / procedure step markers
+    "glue:first": ("まず", "最初に", "はじめに"),
+    "glue:middle": ("次に", "続いて", "その後", "それから"),
+    "glue:last": ("最後に", "最終的に"),
+    # procedure: the 連体 clause the closing frame's noun follows
+    "glue:procedure_lead": ("次の手順で処理する", "以下の手順で処理する", "次の順に処理を行う"),
+    # procedure: step markers as words (まず、…) or numbers ((1) …)
+    "glue:procedure_style": ("words", "numbers"),
+    # goal_first: the second sentence that adds the earlier steps
+    "glue:goal_lead": ("ただし、", "その際、"),
+    "glue:goal_tail": ("こと。", "ようにしてください。"),
+}
+BEFORE = "前に"
+
+# Categories whose consecutive ops are told as one から-chain (2.2).
+CHAIN_CATEGORIES = frozenset({"map", "slice"})
 
 
 class JaRenderError(ValueError):
@@ -112,13 +158,22 @@ class ExpressionChoice:
 
 @dataclass(frozen=True)
 class Rendering:
-    """One Japanese instruction plus the choices that produced it."""
+    """One Japanese instruction plus the choices that produced it.
+    ``template`` repeats the sentence-type choice in readable form;
+    ``narration`` is the op order the sentence tells (always the AST's)."""
 
     text: str
     choices: tuple[ExpressionChoice, ...]
+    template: str = SEQUENTIAL
+    narration: tuple[str, ...] = ()
 
     def to_dict(self) -> dict:
-        return {"text": self.text, "choices": [c.to_dict() for c in self.choices]}
+        return {
+            "text": self.text,
+            "template": self.template,
+            "narration": list(self.narration),
+            "choices": [c.to_dict() for c in self.choices],
+        }
 
 
 # key -> the expression indices a rendering may draw from; a key that is not
@@ -140,13 +195,35 @@ class _Picker:
         self.allowed = allowed or {}
         self.choices: list[ExpressionChoice] = []
 
+    def _index(self, key: str, n: int, candidates: Optional[Sequence[int]] = None) -> int:
+        """Sample an index in ``range(n)``, from ``candidates`` if given,
+        and from the ``allowed`` indices of ``key`` if it has any."""
+        indices = list(candidates) if candidates is not None else list(range(n))
+        allowed = self.allowed.get(key)
+        if allowed:
+            indices = [i for i in indices if i in allowed]
+        if not indices:
+            raise JaRenderError(f"{key}: no candidate left to choose from")
+        return self.rng.choice(indices) if allowed or candidates is not None else self.rng.randrange(n)
+
     def _pick(self, key: str) -> tuple[object, int]:
         expressions = self.dictionary.expressions(key)  # raises if key absent
         if not expressions:
             raise JaRenderError(f"expression dictionary entry {key!r} has no expressions")
-        indices = self.allowed.get(key)
-        index = self.rng.choice(indices) if indices else self.rng.randrange(len(expressions))
+        index = self._index(key, len(expressions))
         return expressions[index], index
+
+    def choose(self, key: str, options: Sequence, candidates: Optional[Sequence[int]] = None):
+        """Pick one of ``options`` (glue, sentence type) and
+        record it like an expression, so a replay reproduces it."""
+        index = self._index(key, len(options), candidates)
+        self.choices.append(ExpressionChoice(key=key, index=index))
+        return options[index]
+
+    def glue(self, key: str, exclude: Iterable[str] = ()) -> str:
+        options = GLUE[key]
+        excluded = set(exclude)
+        return self.choose(key, options, [i for i, text in enumerate(options) if text not in excluded])
 
     def text(self, key: str) -> str:
         """Pick a plain-string expression (ADNOMINAL / TEXT)."""
@@ -174,54 +251,57 @@ def _form(is_last: bool) -> str:
     return TERMINAL if is_last else TE
 
 
-def adnominal_order(filters: Sequence[str]) -> tuple[str, ...]:
-    """``filters`` in the order their fragments are read out (see
-    ``ADNOMINAL_GROUP_ORDER``). Predicates of an unknown group keep their
-    position at the end; the sort is stable, so the AST's own order decides
-    any tie."""
-    def rank(op: str) -> int:
-        group = FILTER_OP_TO_GROUP.get(op)
-        return ADNOMINAL_GROUP_ORDER.index(group) if group in ADNOMINAL_GROUP_ORDER else len(ADNOMINAL_GROUP_ORDER)
-
-    return tuple(sorted(filters, key=rank))
+def _dictionary_key(op: AtomicOp) -> str:
+    """The expression-dictionary key of ``op``: its tag, except that
+    ``mul_const``'s constant is a placeholder (2.5), not part of the key."""
+    return f"{op.category}:{op.name}"
 
 
-def _render_filter(ast: SemanticAST, picker: _Picker, is_last_category: bool) -> str:
-    """ja_generator_plan.md 2.1: concatenate the ADNOMINAL fragments, then
-    substitute them into the shared filter frame."""
-    fragment = "".join(picker.text(f"filter:{op}") for op in adnominal_order(ast.filters))
-    frame = picker.pair("frame:filter_verb", _form(is_last_category))
+def _render_filter(op: AtomicOp, picker: _Picker, form: str) -> str:
+    """ja_generator_plan.md 2.1: the filter's ADNOMINAL fragment substituted
+    into the shared filter frame."""
+    fragment = picker.text(_dictionary_key(op))
+    frame = picker.pair("frame:filter_verb", form)
     return frame.replace(FRAG_PLACEHOLDER, fragment)
 
 
-def _render_chain(
-    ops: Sequence[tuple[str, Optional[int]]], picker: _Picker, is_last_category: bool
-) -> str:
-    """ja_generator_plan.md 2.2: an ordered ACTION_PAIR chain (map / slice).
-    Non-final links are ``te`` + ``から``; the final link is ``terminal`` only
-    if this is also the last active category."""
+def _unit_text(op: AtomicOp, picker: _Picker, form: str) -> str:
+    """One op as a clause in ``form`` (``terminal`` / ``te``)."""
+    if op.category == "filter":
+        return _render_filter(op, picker, form)
+    return picker.pair(_dictionary_key(op), form, arg=op.arg)
+
+
+def _render_chain(ops: Sequence[AtomicOp], picker: _Picker, is_last_clause: bool) -> str:
+    """ja_generator_plan.md 2.2: an ordered ACTION_PAIR chain (a run of map /
+    slice ops). Non-final links are ``te`` + ``から``; the final link is
+    ``terminal`` only if this is also the last clause."""
     parts: list[str] = []
-    for position, (key, arg) in enumerate(ops):
+    for position, op in enumerate(ops):
         is_last_op = position == len(ops) - 1
-        text = picker.pair(key, _form(is_last_category and is_last_op), arg=arg)
+        text = _unit_text(op, picker, _form(is_last_clause and is_last_op))
         if not is_last_op:
             text += CHAIN_CONNECTIVE
         parts.append(text)
     return "".join(parts)
 
 
-def _clause(ast: SemanticAST, category: str, picker: _Picker, is_last_category: bool) -> str:
-    if category == "filter":
-        return _render_filter(ast, picker, is_last_category)
-    if category == "map":
-        ops = [(f"map:{name}", arg) for name, arg in ast.map_ops]
-        return _render_chain(ops, picker, is_last_category)
-    if category == "order":
-        return picker.pair(f"order:{ast.order_op}", _form(is_last_category))
-    if category == "slice":
-        ops = [(f"slice:{name}", None) for name in ast.slice_ops]
-        return _render_chain(ops, picker, is_last_category)
-    raise JaRenderError(f"unknown category: {category!r}")  # pragma: no cover - schema-guarded
+def _clause_groups(ast: SemanticAST) -> list[tuple[AtomicOp, ...]]:
+    """``ast.ops`` split into the clauses of the ``sequential`` type: a run of
+    consecutive map (or slice) ops is one chain, every other op a clause of
+    its own."""
+    groups: list[list[AtomicOp]] = []
+    for op in ast.ops:
+        if groups and op.category in CHAIN_CATEGORIES and groups[-1][-1].category == op.category:
+            groups[-1].append(op)
+        else:
+            groups.append([op])
+    return [tuple(group) for group in groups]
+
+
+def _sentence(text: str) -> str:
+    """``text`` as a sentence of its own: one trailing 、/。 dropped, 。 added."""
+    return text.rstrip(CLAUSE_SEPARATOR).rstrip(SENTENCE_END) + SENTENCE_END
 
 
 def _assemble(opening: str, clauses: Sequence[str], closing: str) -> str:
@@ -238,29 +318,121 @@ def _assemble(opening: str, clauses: Sequence[str], closing: str) -> str:
     return CLAUSE_SEPARATOR.join(parts) + closing.lstrip(CLAUSE_SEPARATOR)
 
 
+def _step_marker(picker: _Picker, position: int, count: int, used_middle: list[str]) -> str:
+    """まず / 次に / 最後に for unit ``position`` of ``count``; middle markers
+    are not repeated within one sentence while unused ones remain."""
+    if position == 0:
+        return picker.glue("glue:first")
+    if position == count - 1:
+        return picker.glue("glue:last")
+    exclude = used_middle if len(used_middle) < len(GLUE["glue:middle"]) else ()
+    marker = picker.glue("glue:middle", exclude=exclude)
+    used_middle.append(marker)
+    return marker
+
+
+def _sequential(ast: SemanticAST, picker: _Picker, units: Sequence[AtomicOp], opening: str) -> str:
+    """連用連接型: 「A-te、B-te、C-terminal」+ closing (ja_generator_plan.md 2.4)."""
+    groups = _clause_groups(ast)
+    clauses = [
+        _render_chain(group, picker, is_last_clause=(i == len(groups) - 1))
+        for i, group in enumerate(groups)
+    ]
+    return _assemble(opening, clauses, picker.text("frame:closing"))
+
+
+def _ordinal(ast: SemanticAST, picker: _Picker, units: Sequence[AtomicOp], opening: str) -> str:
+    """順序副詞型: 「まずA-te、次にB-te、最後にC-terminal」+ closing."""
+    used_middle: list[str] = []
+    clauses = []
+    for i, unit in enumerate(units):
+        is_last = i == len(units) - 1
+        marker = _step_marker(picker, i, len(units), used_middle)
+        clauses.append(marker + _unit_text(unit, picker, _form(is_last)))
+    return _assemble(opening, clauses, picker.text("frame:closing"))
+
+
+def _procedure(ast: SemanticAST, picker: _Picker, units: Sequence[AtomicOp], opening: str) -> str:
+    """手順列挙型: 「次の手順で処理する」+ closing, then one sentence per unit
+    (「まず、A。次に、B。…」 or 「(1) A。(2) B。…」)."""
+    lead = picker.glue("glue:procedure_lead")
+    head = _assemble(opening, [lead], picker.text("frame:closing"))
+    numbered = picker.glue("glue:procedure_style") == "numbers"
+    used_middle: list[str] = []
+    steps = []
+    for i, unit in enumerate(units):
+        marker = f"({i + 1}) " if numbered else _step_marker(picker, i, len(units), used_middle) + CLAUSE_SEPARATOR
+        steps.append(marker + _sentence(_unit_text(unit, picker, TERMINAL)))
+    return head + "".join(steps)
+
+
+def _goal_first(ast: SemanticAST, picker: _Picker, units: Sequence[AtomicOp], opening: str) -> str:
+    """後段先行型: the last unit first, 「Z-terminal」+ closing, then the
+    earlier units in a second sentence: 「ただし、Z-terminal前に、A-te、…、
+    Y-terminalこと。」. 「前に」 is what keeps the order explicit although Z is
+    read before A."""
+    *earlier, final = units
+    final_text = _unit_text(final, picker, TERMINAL).rstrip(CLAUSE_SEPARATOR)
+    head = _assemble(opening, [final_text], picker.text("frame:closing"))
+    lead = picker.glue("glue:goal_lead")
+    clauses = [
+        _unit_text(unit, picker, _form(i == len(earlier) - 1)).rstrip(CLAUSE_SEPARATOR)
+        for i, unit in enumerate(earlier)
+    ]
+    tail = picker.glue("glue:goal_tail")
+    return head + lead + final_text + BEFORE + CLAUSE_SEPARATOR + CLAUSE_SEPARATOR.join(clauses) + tail
+
+
+_TEMPLATE_BUILDERS = {
+    SEQUENTIAL: _sequential,
+    ORDINAL: _ordinal,
+    PROCEDURE: _procedure,
+    GOAL_FIRST: _goal_first,
+}
+
+
+def applicable_templates(ast: SemanticAST) -> tuple[str, ...]:
+    """The sentence types ``ast`` can be told in: the unit-based ones need
+    at least two units (ops)."""
+    return tuple(t for t in TEMPLATES if t not in MULTI_UNIT_TEMPLATES or ast.num_ops() >= 2)
+
+
+def _compose(
+    ast: SemanticAST,
+    picker: _Picker,
+    templates: Optional[Sequence[str]] = None,
+) -> Rendering:
+    """Shared by ``render`` and ``render_from_record``: sentence type, then
+    the sentence itself, every choice through ``picker``."""
+    usable = applicable_templates(ast)
+    if templates is not None:
+        unknown = set(templates) - set(TEMPLATES)
+        if unknown:
+            raise JaRenderError(f"unknown sentence type(s): {sorted(unknown)}")
+        usable = tuple(t for t in usable if t in templates)
+    if not usable:
+        raise JaRenderError(f"none of the sentence types {templates} applies to {ast.to_dict()}")
+    template = picker.choose("template", TEMPLATES, [TEMPLATES.index(t) for t in usable])
+
+    opening = picker.text("frame:opening")
+    text = _TEMPLATE_BUILDERS[template](ast, picker, ast.ops, opening)
+    return Rendering(text=text, choices=tuple(picker.choices), template=template, narration=ast.tags())
+
+
 def render(
     ast: SemanticAST,
     dictionary: ExpressionDictionary,
     rng: Optional[random.Random] = None,
     allowed: Optional[AllowedIndices] = None,
+    templates: Optional[Sequence[str]] = None,
 ) -> Rendering:
     """Render one Japanese instruction for ``ast`` by sampling the dictionary
-    (restricted to ``allowed`` indices per key, if given)."""
+    (restricted to ``allowed`` indices per key, if given) and a sentence type
+    (from ``templates``, default all that apply). The ops are always told in
+    ``ast.ops`` order."""
     rng = rng or random.Random()
     picker = _Picker(dictionary, rng, allowed)
-
-    categories = ast.active_categories()  # already in pipeline order
-    if not categories:  # pragma: no cover - schema forbids it
-        raise JaRenderError(f"semantic AST has no active category: {ast.to_dict()}")
-
-    opening = picker.text("frame:opening")
-    clauses = [
-        _clause(ast, category, picker, is_last_category=(i == len(categories) - 1))
-        for i, category in enumerate(categories)
-    ]
-    closing = picker.text("frame:closing")
-
-    return Rendering(text=_assemble(opening, clauses, closing), choices=tuple(picker.choices))
+    return _compose(ast, picker, templates)
 
 
 def seed_for(ast: SemanticAST, seed: int = 0) -> int:
@@ -277,8 +449,10 @@ def render_variants(
     seed: int = 0,
     max_attempts: Optional[int] = None,
     allowed: Optional[AllowedIndices] = None,
+    templates: Optional[Sequence[str]] = None,
 ) -> list[Rendering]:
-    """Up to ``n`` *distinct* instructions for one semantic AST.
+    """Up to ``n`` *distinct* instructions for one semantic AST
+    (``allowed`` / ``templates`` as in ``render``).
 
     Distinctness is by sentence text, so two different expression choices
     that happen to spell the same sentence count once. With a small
@@ -292,7 +466,7 @@ def render_variants(
     for _ in range(attempts):
         if len(out) >= n:
             break
-        rendering = render(ast, dictionary, rng, allowed)
+        rendering = render(ast, dictionary, rng, allowed, templates)
         if rendering.text in seen:
             continue
         seen.add(rendering.text)
@@ -306,6 +480,14 @@ def render_variants(
 
 PARAPHRASE_RATIO = 0.25
 
+# Keys every split draws on in full. The 言い換え being tested is the wording of
+# the *operations*, and the frames are the boilerplate around them, so reserving
+# a quarter of the frames buys no paraphrase signal while it multiplies down how
+# many distinct sentences a split can spell: a reserved quarter of 11 openings
+# and 5 closings leaves a one-op AST 3 x 1 x (its op's reserved wordings)
+# sentences, far short of the 20+ codes that AST has in expressions_code/.
+SHARED_KEY_PREFIX = "frame:"
+
 
 @dataclass(frozen=True)
 class TemplatePools:
@@ -313,10 +495,10 @@ class TemplatePools:
     splits and the 言い換えテスト (ja_generator_plan.md section 3).
 
     ``train`` and ``paraphrase`` map a key to the indices it may use in the
-    respective splits. A key with a single expression cannot be divided; it is
-    absent from both mappings (so both may use it) and listed in
-    ``shared_keys`` so a report can say how much of the sentence is genuinely
-    new."""
+    respective splits. A key that is not divided -- a ``frame:`` key, or one
+    with a single expression -- is absent from both mappings (so both may use
+    it) and listed in ``shared_keys`` so a report can say how much of the
+    sentence is genuinely new."""
 
     train: dict[str, tuple[int, ...]]
     paraphrase: dict[str, tuple[int, ...]]
@@ -326,15 +508,17 @@ class TemplatePools:
 def template_pools(
     dictionary: ExpressionDictionary, ratio: float = PARAPHRASE_RATIO, seed: int = 0
 ) -> TemplatePools:
-    """Reserve ``ratio`` of every key's expressions (at least one, never all)
-    for the paraphrase test. The choice is a seeded shuffle of the indices,
-    so it does not depend on the order the human reviewer left them in."""
+    """Reserve ``ratio`` of every operation key's expressions (at least one,
+    never all) for the paraphrase test. The choice is a seeded shuffle of the
+    indices, so it does not depend on the order the human reviewer left them
+    in. ``SHARED_KEY_PREFIX`` keys and keys with a single expression are not
+    divided at all."""
     train: dict[str, tuple[int, ...]] = {}
     paraphrase: dict[str, tuple[int, ...]] = {}
     shared: list[str] = []
     for key in dictionary.keys():
         n = len(dictionary.expressions(key))
-        if n < 2:
+        if n < 2 or key.startswith(SHARED_KEY_PREFIX):
             shared.append(key)
             continue
         indices = list(range(n))
@@ -538,7 +722,7 @@ def instruction_record(
     expression indices used).
 
     Field names line up with homework.md's データレコード example, so these
-    records can be joined onto demo.py's ``out/{train,val,test}.jsonl`` by
+    records can be joined onto demo.py's ``out/ast_{split}.jsonl`` by
     ``semantic_hash`` / ``spec_id``.
     """
     record: dict = {
@@ -581,16 +765,8 @@ def render_from_record(record: dict, dictionary: ExpressionDictionary) -> list[s
     ast = SemanticAST.from_dict(record["semantic_ast"])
     out: list[str] = []
     for rendering in record["renderings"]:
-        queue = list(rendering["choices"])
-        picker = _ReplayPicker(dictionary, queue)
-        categories = ast.active_categories()
-        opening = picker.text("frame:opening")
-        clauses = [
-            _clause(ast, category, picker, is_last_category=(i == len(categories) - 1))
-            for i, category in enumerate(categories)
-        ]
-        closing = picker.text("frame:closing")
-        out.append(_assemble(opening, clauses, closing))
+        picker = _ReplayPicker(dictionary, list(rendering["choices"]))
+        out.append(_compose(ast, picker).text)
     return out
 
 
@@ -601,17 +777,16 @@ class _ReplayPicker(_Picker):
         super().__init__(dictionary, random.Random(0))
         self.queue = queue
 
-    def _pick(self, key: str) -> tuple[object, int]:
+    def _index(self, key: str, n: int, candidates: Optional[Sequence[int]] = None) -> int:
         if not self.queue:
             raise JaRenderError(f"replay ran out of recorded choices at key {key!r}")
         choice = self.queue.pop(0)
         if choice["key"] != key:
             raise JaRenderError(f"replay expected key {choice['key']!r}, renderer asked for {key!r}")
         index = choice["index"]
-        expressions = self.dictionary.expressions(key)
-        if not 0 <= index < len(expressions):
+        if not 0 <= index < n:
             raise JaRenderError(
-                f"{key}: recorded index {index} is out of range for a dictionary with "
-                f"{len(expressions)} expressions (dictionary changed since the record was written?)"
+                f"{key}: recorded index {index} is out of range for {n} options "
+                f"(dictionary or renderer changed since the record was written?)"
             )
-        return expressions[index], index
+        return index

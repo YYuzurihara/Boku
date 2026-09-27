@@ -14,7 +14,7 @@ from __future__ import annotations
 import random
 from typing import TypedDict
 
-from reference_interpreter import interpret
+from reference_interpreter import apply_ops, interpret
 from schema import ELEMENT_MAX, ELEMENT_MIN, K_MAX, K_MIN, XS_MAX_LEN, SemanticAST
 
 
@@ -95,14 +95,24 @@ _REJECT_ALL_CANDIDATES: tuple[list[int], ...] = (
 
 
 def _rejects_everything(ast: SemanticAST, xs: list[int], k: int) -> bool:
-    return bool(ast.filters) and not interpret(SemanticAST(filters=ast.filters), xs, k)
+    """Whether the AST's first filter drops every element of ``xs``. The ops
+    before it run first (they may transform the values the filter sees); none
+    of them can empty a non-empty list, so an empty result is the filter's
+    doing."""
+    categories = ast.categories()
+    if not xs or "filter" not in categories:
+        return False
+    prefix = ast.ops[: categories.index("filter") + 1]
+    return not apply_ops(prefix, xs, k)
 
 
 def generate_boundary_test_cases(ast: SemanticAST, seed: int = 0) -> list[TestCase]:
     """Boundary-only suite: empty list, one element (zero / positive /
     negative), all elements equal, negatives only, mixed signs, extreme
-    magnitudes, max length, and -- when the AST has a filter -- lists the
-    filter rejects entirely, each with the smallest and largest ``k``.
+    magnitudes, max length, and -- when the AST has a filter -- lists its
+    first filter rejects entirely, each with the smallest and largest ``k``
+    (none exists when the ops before the filter make it a tautology, e.g.
+    ``map:mul_const:2`` then ``filter:even``).
     Deterministic given ``seed``; ``expected`` comes from the reference
     interpreter."""
     rng = random.Random(seed)
@@ -140,6 +150,6 @@ def generate_boundary_test_cases(ast: SemanticAST, seed: int = 0) -> list[TestCa
 
 
 def has_reject_all_case(ast: SemanticAST, cases: list[TestCase]) -> bool:
-    """True if some case's filtered list is empty (only meaningful for ASTs
-    with a filter)."""
+    """True if some case makes the AST's first filter drop every element
+    (only meaningful for ASTs with a filter)."""
     return any(_rejects_everything(ast, c["xs"], c["k"]) for c in cases)

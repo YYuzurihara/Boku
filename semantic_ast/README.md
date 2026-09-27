@@ -9,7 +9,7 @@
     - 重複除去
     - 均等抽出のためにラベルごとに上限を設けておく
 
-を実装したもの。日本語指示文や生成コードより **先に** 存在する、問題の意味を表す中間表現（`{"filter": [...], "map": [...], "order": ..., "slice": [...]}`）と、それを軸にしたデータパイプラインの土台を提供する。
+を実装したもの。日本語指示文や生成コードより **先に** 存在する、問題の意味を表す中間表現（原子操作の列 `{"ops": [[...], ...]}`）と、それを軸にしたデータパイプラインの土台を提供する。
 
 ## ファイル構成
 
@@ -19,7 +19,7 @@ semantic_ast/
   reference_interpreter.py  意味ASTを (xs, k) に対して直接実行する「正解を計算する参照インタプリタ」
   generator.py               意味ASTの全列挙 + ラベル付与
   testcases.py               境界値+ランダムなテストケース生成、境界値テスト専用スイート生成（参照インタプリタでexpectedを計算）
-  split.py                   重複除去・層化train/val/test分割・4種のテスト集合（通常/言い換え/組合せ汎化/境界値）・漏洩検査・ラベル別上限
+  split.py                   重複除去・層化train/val分割・3種のテスト集合（言い換え/組合せ汎化/境界値）・漏洩検査
   demo.py                    上記を一気通貫で実行し semantic_ast/out/*.jsonl を書き出す
 
   expressions_ja/            意味AST→日本語指示文（instruction_ja）の生成。コードも表現辞書もここ（expressions_ja/README.md）
@@ -33,22 +33,31 @@ semantic_ast/
 
 ```json
 {
-  "filter": ["even", "ge_k"],
-  "map": ["mul_const", 2],
-  "order": "ascending",
-  "slice": ["take_first_k"]
+  "ops": [["filter", "even"], ["map", "mul_const", 2], ["order", "ascending"]]
 }
 ```
 
-- `filter`: 0〜2個のAND結合された抽出述語（`even`/`odd`/`gt_k`/`ge_k`/`lt_k`/`le_k`/`multiple_of_k`/`positive`/`negative`/`zero`）。同じ排他グループ（例: `even`と`odd`）から2つ選ぶことはできない（常に空集合になるなど無意味な組み合わせを排除するため）。
-- `map`: 0〜2個の変換を**順序付きで連結**（`add_k`/`sub_k`/`mul_k`/`negate`/`abs`/`square`、または定数`2`〜`10`のいずれかを取る`mul_const`）。同じ演算タイプを2回使うことはできない（例: `mul_const`を2回連結するのは別の`mul_const`の冗長な言い換えになってしまうため）。順序は結果に影響する（`add_k`してから`mul_const(2)` ≠ `mul_const(2)`してから`add_k`）。
-- `order`: `ascending`/`descending`/`reverse`のいずれか、または無し。`descending`はソートだが`reverse`は現在の並び順をひっくり返すだけで、意味的に異なる操作として区別している。ソートや反転を連結しても意味のある多様性は生まれないため、こちらは単一選択のまま。
-- `slice`: 0〜2個の切り出し操作を**順序付きで連結**（`take_first_k`/`take_last_k`/`step_2`）。同じ演算を2回使うことはできない。順序は結果に影響する（例: 先頭k個を取ってから1個おき ≠ 1個おきに取ってから先頭k個）。
-- パイプラインは常に **filter → map → order → slice** の順で実行される（`reference_interpreter.py`）。`map`と`slice`はそれぞれ内部で連結順に適用される。
+意味ASTは**24種類の原子操作から1〜3個を、重複を許して、順序つきで並べた列**で、左から順に実行する（`schema.py`）。
 
-## 設計判断: 「1〜3個を組み合わせた問題」の解釈
+| カテゴリ | 原子操作 | 数 |
+|---|---|---|
+| `filter`（抽出） | `even` `odd` `gt_k` `ge_k` `lt_k` `le_k` `multiple_of_k` `positive` `negative` `zero` | 10 |
+| `map`（変換） | `add_k` `sub_k` `mul_k` `negate` `abs` `square` `mul_const(2)` `mul_const(3)` | 8 |
+| `order`（並べ替え） | `ascending` `descending` `reverse` | 3 |
+| `slice`（切り出し） | `take_first_k` `take_last_k` `step_2` | 3 |
 
-`homework.md`は「以下から1〜3個を組み合わせた問題だけを扱う」と書いているが、これを字義通り取ると同じ文書内の作問例（`ge_k`・`even`・`mul_const(2)`・`ascending`の4つの原子操作を組み合わせている）と矛盾する。`sandbox/ast_safety.py`が属性アクセス制限について行ったのと同様の解決をしており、「1〜3個」を **filter/map/order/sliceという4つのカテゴリスロットのうち1〜3個が有効であること** として解釈した（`filter`スロット自体は最大2つの述語をAND結合できる。作問例は抽出+変換+並べ替え=3カテゴリなので、この解釈と整合する）。この判断は`schema.py`のモジュールdocstringに明記している。
+- 各操作は`[カテゴリ, 名前]`（`mul_const`だけ`[カテゴリ, 名前, 定数]`）。`mul_const(2)`と`mul_const(3)`は別の原子操作として数える。`descending`はソートだが`reverse`は現在の並び順をひっくり返すだけで、意味的に異なる操作として区別している。
+- **重複可**: 同じ原子操作・同じカテゴリを何度使ってもよい（`[filter:even, filter:even]`、`[order:reverse, order:reverse]`、`[slice:take_first_k, map:add_k, slice:take_first_k]`）。カテゴリの並びにも制約はない。
+- 全体の数は 24 + 24² + 24³ = **14,424種類**（`generator.enumerate_all()`）。
+- コードで作るときは`SemanticAST.of("filter:even", "map:mul_const:2", "order:ascending")`のように原子操作のタグ（`AtomicOp.tag`）を並べる。
+
+### 順序が違えば別の意味AST
+
+同じ原子操作の組み合わせでも、**順序が異なれば異なる意味AST**として扱う。`semantic_hash`は操作列をその順のままハッシュするので、`[filter:even, order:ascending]`と`[order:ascending, filter:even]`は別のハッシュ・別の日本語指示文・別のコードになる。
+
+- 結果として同じ関数になる順序違い（抽出とソートの入れ替えなど）や、冗長な重複（`[filter:even, filter:even]`）、打ち消し合う重複（`[order:reverse, order:reverse]`＝恒等写像）も、正準形に畳まずそのまま別の意味ASTとして残す。指示文に書かれた順序が、コードが従うべき順序だからである。
+- 日本語指示文は常に操作列の順に語る（`expressions_ja/README.md`）。コードも操作列の順に書き下し、全14,424意味AST×全スタイルで**異なる意味ASTのコードが1件も一致しない**ことをテストで保証している（`expressions_code/README.md`）。
+- 注意: 計算結果が同じ順序違いの2つの意味ASTが、trainとtestに分かれて入ることはありうる（ハッシュが別なので漏洩検査はこれを漏洩とみなさない）。
 
 ## 使い方
 
@@ -57,10 +66,12 @@ semantic_ast/
 ```python
 from generator import enumerate_all
 
-all_asts = enumerate_all()  # 40,589種類の意味AST（全て相異なるsemantic_hashを持つ）
+all_asts = enumerate_all()   # 14,424種類（長さ1: 24、長さ2: 576、長さ3: 13,824。全て相異なるsemantic_hashを持つ）
 ```
 
-`homework.md`の「生成する意味AST 30,000〜100,000種類」という目安は、この構造的な意味ASTの集合そのものの数量を指す。閉じた原子操作の語彙（filter述語10種・mapタイプ7種［`mul_const`の定数は`homework.md`の例示どおり2,3のみ］・order 3種・slice 3種、カテゴリ1〜3個有効）だけでは約3,383種類にしかならず約9倍不足するため、`map`と`slice`をそれぞれ「同一カテゴリ内で最大2個の演算を順序付きで連結できる」ように拡張することで40,589種類まで増やしている（`homework.md`が明示する操作リストの外側に新しい演算を追加せず、`mul_const`の定数も`homework.md`の例示（2倍、3倍）から広げない範囲での拡張）。設計判断の詳細と正確な組み合わせ計算は`schema.py`と`generator.py`のモジュールdocstringを参照。
+`homework.md`のデータ規模表の「生成する意味AST 30,000〜100,000種類」には届かないが、語彙は`homework.md`が明示する24の原子操作に留め、水増しはしていない。
+
+`generator.label(ast)`は**カテゴリの並び**（例: `("filter", "map", "order")`）を層化ラベルにする。ラベルは4 + 16 + 64 = 84種類で、1ラベルあたり3〜1,000件。
 
 ### 参照インタプリタ
 
@@ -68,8 +79,10 @@ all_asts = enumerate_all()  # 40,589種類の意味AST（全て相異なるseman
 from reference_interpreter import interpret
 from schema import SemanticAST
 
-ast = SemanticAST(filters=("even", "ge_k"), map_ops=(("mul_const", 2),), order_op="ascending")
-interpret(ast, xs=[1, 5, 2, 8, -4, 10, 3], k=3)  # -> [8, 10]
+ast = SemanticAST.of("filter:even", "map:mul_const:2", "order:ascending")
+interpret(ast, xs=[1, 5, 2, 8, -4, 10, 3], k=3)  # -> [-8, 4, 16, 20]
+interpret(SemanticAST.of("order:ascending", "map:mul_const:2", "filter:even"), xs=[1, 5, 2, 8, -4, 10, 3], k=3)
+# -> [-8, 2, 4, 6, 10, 16, 20]（先に並べ替え、全要素を2倍してから偶数を残すので結果が変わる）
 ```
 
 ### テストケース生成
@@ -82,36 +95,57 @@ cases = generate_test_cases(ast, seed=42)
 # 各ケースは {"xs": ..., "k": ..., "expected": ...} で、expectedは参照インタプリタが計算
 ```
 
-### 分割・重複除去・漏洩検査・上限
+### 分割・重複除去・漏洩検査
 
 ```python
-from split import stratified_split, dedup_by_hash, check_no_leakage, cap_per_label, SplitRatios
+from split import stratified_split, dedup_by_hash, check_no_leakage, SplitRatios
 
 deduped = dedup_by_hash(all_asts)
-splits = stratified_split(deduped, ratios=SplitRatios(0.8, 0.1, 0.1), seed=0)
-check_no_leakage(splits)  # 同じ意味ASTがtrain/val/testに跨っていないかを検査
-capped = {name: cap_per_label(group, max_per_label=500, seed=0) for name, group in splits.items()}
+splits = stratified_split(deduped, ratios=SplitRatios(0.9, 0.1), seed=0)  # train / val
+check_no_leakage(splits)  # 同じ意味ASTが複数のsplitに跨っていないかを検査
 ```
 
 `stratified_split`は意味AST単位で分割する（`homework.md`: 「意味ASTを分割した後で言い換えやコード変換を行わないと...データ漏洩...」）。分割の基本単位が意味AST全体なので、後続で1つの意味ASTから何個の日本語言い換え・コード変換を生成しても、それらは自動的に同じsplitに属し、原理的に漏洩しにくい構造になっている。`check_no_leakage`はそれでも万一の重複混入（例: 分割前の重複除去漏れ）を検出するための独立した安全網。
 
-### 4種のテスト集合（`homework.md`「訓練・検証・テスト分割」）
+### 3種のテスト集合（`homework.md`「訓練・検証・テスト分割」）
 
-`build_eval_splits`が意味ASTを次の6グループに**互いに素**に分ける（`split.ALL_SPLITS`）。どのグループも意味AST単位なので、`check_no_leakage`が6グループ全体に効く。
+`build_eval_splits`が意味ASTを次の5グループに**互いに素**に分ける（`split.ALL_SPLITS`）。どのグループも意味AST単位なので、`check_no_leakage`が5グループ全体に効く。
+
+通常テスト（`test`）は置かない。テスト集合の意味ASTはどれも訓練で未見なので、「未見の意味ASTで解けるか」は3つのテスト集合がすべて測っており、別に分けても同じことを測るだけになるため。訓練から外した意味ASTは、3つのテスト集合のどれか1つにだけ入る。
 
 | split | 内容 | 何を測るか |
 |---|---|---|
-| `train` / `val` | 残りを80/10/10に層化分割 | 学習・検証 |
-| `test`（通常テスト） | 訓練と同じ演算の語彙・同じ日本語テンプレートで、意味AST・`xs`・`k`が未見 | 基本性能 |
+| `train` / `val` | 3つのテスト集合を除いた残りを90/10に層化分割 | 学習・検証 |
 | `test_paraphrase`（言い換えテスト） | 訓練で使わない日本語テンプレートだけで作った指示文（意味ASTは未見） | 言い回しへの頑健性 |
 | `test_compositional`（組合せ汎化テスト） | `split.HOLDOUT_PAIRS`の演算ペア（例: `filter:even`と`order:descending`）を**同時に含む**意味AST全て | 別々に学んだ演算の組み合わせ |
 | `test_boundary`（境界値テスト） | 空リスト・要素1個・全要素同値・負数のみ・全要素不合格などの入力だけをテストケースにした意味AST | 端の場合の正しさ |
 
-- **組合せ汎化**: ペアは4組（全て異なるカテゴリ間）。ペアを含む意味ASTは`test_compositional`にしか入らず、train/val/test/他の集合には**1件も**入らない。一方でペアの各演算は単独ではtrainに出現する。両方を`check_holdout_pairs`が検査する（demo.pyでも毎回実行）。
-- **言い換え**: 表現辞書の各キー（表現が2件以上あるもの）から`ja_generator.PARAPHRASE_RATIO`（25%、最低1件・全件は不可）を`template_pools`が予約する。`test_paraphrase`はその予約分だけ、他の全split（train/val/test/…）は予約分を**使わない**。表現が1件しかないキー（`map:mul_const`など）は分けられないので全splitで共有し、`shared_keys`に出る。予約分だけでは異なる文がコード件数に満たない意味ASTがあるため、`corpus_generator.py`はこのsplitに限り日本語表現を繰り返してコード件数に合わせる。`ja_demo.py`は保存した各文が自分のsplitのプール内かを検証する。
-- **境界値**: `testcases.generate_boundary_test_cases`が、フィルタを持つ意味ASTには必ず「フィルタが全要素を落とす」入力を含める（全40,589件のうちフィルタ付き38,070件で確認済み）。
-- **通常テスト**: 「指示文と定数が異なる」は、意味AST（`mul_const`の定数を含む）が訓練と重ならず、`xs`・`k`も別に生成されることで満たす。
-- 件数（`MAX_PER_LABEL`前）: train 28,209 / val 3,232 / test 3,232 / paraphrase 1,701 / compositional 2,514 / boundary 1,701。言い換え・境界値は`EvalRatios`（各5%）。
+- **組合せ汎化**: ペアは4組（全て異なるカテゴリ間、どちらの順序で現れても該当）。各ペアが140件、計554件。ペアを含む意味ASTは`test_compositional`にしか入らず、train/val/他のテスト集合には**1件も**入らない。一方でペアの各演算は単独ではtrainに出現する。両方を`check_holdout_pairs`が検査する（demo.pyでも毎回実行）。
+- **言い換え**: 表現辞書の**操作キー**（`filter:*`/`map:*`/`order:*`/`slice:*`で表現が2件以上あるもの）から`ja_generator.PARAPHRASE_RATIO`（25%、最低1件・全件は不可）を`template_pools`が予約する。`test_paraphrase`はその予約分だけ、他の全split（train/val/test_compositional/test_boundary）は予約分を**使わない**。予約しないのは、表現が1件しかないキー（`map:mul_const`など）と、`frame:`で始まる枠キー（`opening`/`closing`/`filter_verb`）で、どちらも全splitで共有し`shared_keys`に出る。枠を予約対象から外しているのは、言い換えの対象は**操作の言い方**であって枠は定型文だからで、枠まで4分の1に絞ると1操作の意味ASTが作れる異なる文が opening 3種 × closing 1種まで落ち、コード件数（1意味ASTあたり20〜22件）に届かなくなる。共有した状態では全14,424件が自分のコード件数以上の異なる文を持てるので、`corpus_generator.py`の繰り返し補完（下記）は発火しない。`ja_demo.py`は保存した各文が自分のsplitのプール内かを検証し、コード件数に足りない意味ASTがあれば報告する。
+- **境界値**: `testcases.generate_boundary_test_cases`が、フィルタを持つ意味ASTには「最初のフィルタが全要素を落とす」入力を含める（空でない入力に限る）。フィルタ付き11,470件のうち11,356件で見つかる。見つからない114件は、フィルタより前の変換がフィルタを恒真にしているもの（`map:mul_const:2`→`filter:even`など、どんな入力でも全要素が残る）。
+
+**分割の順序と件数**: 8:1:1 に分けてからテストを3つに割るのではなく、**先にテスト集合3つを分離し、残りを90/10で train/val に分ける**。組合せ汎化の件数は`HOLDOUT_PAIRS`で決まる（比率ではない）ので、テスト全体が10%ちょうどにはならず、割合は多少ずれる。ずれは許容している。
+
+| split | 件数 | 全体（14,424）に対する割合 | 決め方 |
+|---|---|---|---|
+| `train` | 11,234 | 77.9% | テスト3種を除いた残りの90% |
+| `val` | 1,248 | 8.7% | 同・残りの10% |
+| `test_paraphrase` | 694 | 4.8% | 組合せ汎化を除いた残りの5%（`EvalRatios`） |
+| `test_compositional` | 554 | 3.8% | `HOLDOUT_PAIRS`の4ペア×140件 |
+| `test_boundary` | 694 | 4.8% | 組合せ汎化を除いた残りの5%（`EvalRatios`） |
+| テスト計 | 1,942 | 13.5% | |
+
+`split._partition`は、小さいラベルでも比率が崩れないよう割り当ての端数をラベル間で持ち越し、全体の比率を保つ。
+
+**テスト集合ごとの個別生成**: 各意味ASTがどのsplitに入るかは、常に全意味ASTに対する分割（`seed`だけで決まる）で決める。そのため、一部のsplitだけを書き出しても、中身は全部まとめて生成したときと同じで、split同士が互いに素なのも変わらない。どのスクリプトも`--splits`で対象を選べる。
+
+```bash
+python semantic_ast/demo.py --splits test_boundary
+python semantic_ast/expressions_ja/ja_demo.py --splits test_boundary
+python semantic_ast/expressions_code/code_demo.py --splits test_boundary --limit 0
+python data/corpus_generator.py --splits test_boundary
+python model/evaluate.py --ckpt ... --splits test_boundary
+```
 
 ### 一気通貫デモ
 
@@ -119,7 +153,7 @@ capped = {name: cap_per_label(group, max_per_label=500, seed=0) for name, group 
 python semantic_ast/demo.py
 ```
 
-全列挙→重複除去→層化分割→漏洩検査→ラベル別上限→テストケース生成、を実行して`semantic_ast/out/ast_{split}.jsonl`（6 split）を書き出す（`out/`は生成物なので`.gitignore`済み）。各レコードは`homework.md`のデータレコード例のうち`spec_id`/`semantic_ast`/`semantic_hash`/`tests`に対応する。`instruction_ja`は`expressions_ja/`が`out/instructions_{split}.jsonl`に、`reference_code`/`code_style`は`expressions_code/`が`out/code_{split}.jsonl`に、それぞれ同じ`spec_id`で書き出す。
+全列挙→重複除去→層化分割→漏洩検査→テストケース生成、を実行して`semantic_ast/out/ast_{split}.jsonl`（5 split、`--splits`で一部だけも可）を書き出す（`out/`は生成物なので`.gitignore`済み）。各レコードは`homework.md`のデータレコード例のうち`spec_id`/`semantic_ast`/`semantic_hash`/`tests`に対応する。`instruction_ja`は`expressions_ja/`が`out/instructions_{split}.jsonl`に、`reference_code`/`code_style`は`expressions_code/`が`out/code_{split}.jsonl`に、それぞれ同じ`spec_id`で書き出す。
 
 ### 日本語指示文の生成
 
@@ -138,7 +172,7 @@ python semantic_ast/expressions_ja/ja_demo.py      # 表現辞書→結合→保
 from code_generator import variants
 from schema import SemanticAST
 
-ast = SemanticAST(filters=("even", "ge_k"), map_ops=(("mul_const", 2),), order_op="ascending")
+ast = SemanticAST.of("filter:even", "map:mul_const:2", "order:ascending")
 for variant in variants(ast, n=3):
     print(variant.style.name)
     print(variant.code)

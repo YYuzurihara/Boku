@@ -188,7 +188,7 @@ instruction_ja
 
 このJSONは`semantic_ast/`と同様、プリミティブ・キー（op_tagと1対1）を主キーにしており、`schema.py`の`op_tags()`と同じ命名（`filter:even`, `map:mul_const`等）を使うことで、生成器コードとの対応を機械的に取れるようにする。
 
-同じ意味ASTに対し、表現辞書からの抽選バリエーション（フィルタの複数表現、枠テンプレートの複数バリエーション、opening/closingの複数バリエーション）の組み合わせだけで数十〜数百通りの異なる`instruction_ja`を機械的に作れるため、「言い換えテスト」（`homework.md`の訓練に使用しなかった日本語テンプレートを使うテスト）用に、特定の表現辞書エントリやframeバリエーションをtrain側では使わずval/test専用に予約しておく、という分割もこの表現辞書の粒度でできる。→ 実装済み: `ja_generator.template_pools`が各キーの表現の一部を予約し、`render_variants(..., allowed=...)`で`test_paraphrase`だけが予約分を、他のsplitは予約分以外を使う（`semantic_ast/README.md`「4種のテスト集合」）。
+同じ意味ASTに対し、表現辞書からの抽選バリエーション（フィルタの複数表現、枠テンプレートの複数バリエーション、opening/closingの複数バリエーション）の組み合わせだけで数十〜数百通りの異なる`instruction_ja`を機械的に作れるため、「言い換えテスト」（`homework.md`の訓練に使用しなかった日本語テンプレートを使うテスト）用に、特定の表現辞書エントリやframeバリエーションをtrain側では使わずval/test専用に予約しておく、という分割もこの表現辞書の粒度でできる。→ 実装済み: `ja_generator.template_pools`が各**操作**キーの表現の一部を予約し、`render_variants(..., allowed=...)`で`test_paraphrase`だけが予約分を、他のsplitは予約分以外を使う（`semantic_ast/README.md`「4種のテスト集合」）。ただし枠（`frame:opening`/`closing`/`filter_verb`）は予約せず全splitで共有する: 言い換えの対象は操作の言い方であり、枠まで予約すると1操作の意味ASTが作れる異なる文がコード件数（20〜22件）に届かなくなる。
 
 ---
 

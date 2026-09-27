@@ -26,7 +26,7 @@ they are emitted by ``code_generator.py`` from a closed vocabulary in this
 repository, and they pass ``ast_safety.verify_static`` before being executed
 in ``runner.build_restricted_globals()``'s namespace with a per-test alarm.
 Running the corpus in-process is what makes verifying every rendering of all
-40,589 semantic ASTs feasible at all (a container per snippet would be
+semantic ASTs feasible at all (a container per snippet would be
 several orders of magnitude slower). ``verify_in_sandbox`` routes a snippet
 through the real container for spot checks, and ``code_demo.py --sandbox``
 uses it on a sample to confirm the two paths agree; model-generated code
@@ -58,7 +58,7 @@ MAX_REPORTED_FAILURES = 3
 # homework.md's 「長さ上限を超えない」. Two independent heuristics -- total
 # line count and the longest single line -- so both a wall of short lines and
 # one enormous one-liner are caught. The generator's own catalogue currently
-# tops out at 12 lines / 88 chars (every style, over the full DSL space), so
+# tops out at 17 lines / 89 chars (every style, over all 14,424 ASTs), so
 # these leave generous headroom for legitimate renderings while still
 # rejecting a runaway one (or, at evaluation time, a student model that
 # rambles instead of emitting `<|eos|>`).

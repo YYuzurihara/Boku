@@ -19,7 +19,7 @@ from testcases import generate_boundary_test_cases, generate_test_cases, has_rej
 
 class GenerateTestCases(unittest.TestCase):
     def setUp(self):
-        self.ast = SemanticAST(filters=("even", "ge_k"), map_ops=(("mul_const", 2),), order_op="ascending")
+        self.ast = SemanticAST.of("filter:ge_k", "map:mul_const:2", "order:ascending")
 
     def test_at_least_20_random_cases_worth_of_coverage(self):
         cases = generate_test_cases(self.ast, seed=42, n_random=24)
@@ -59,7 +59,7 @@ class GenerateTestCases(unittest.TestCase):
 
 class GenerateBoundaryTestCases(unittest.TestCase):
     def setUp(self):
-        self.ast = SemanticAST(filters=("even", "ge_k"), map_ops=(("mul_const", 2),), order_op="ascending")
+        self.ast = SemanticAST.of("filter:ge_k", "map:mul_const:2", "order:ascending")
         self.cases = generate_boundary_test_cases(self.ast, seed=1)
 
     def test_covers_the_homework_boundary_kinds(self):
@@ -85,11 +85,26 @@ class GenerateBoundaryTestCases(unittest.TestCase):
         self.assertEqual(len(keys), len(set(keys)))
         self.assertEqual(self.cases, generate_boundary_test_cases(self.ast, seed=1))
 
-    def test_every_filtered_ast_in_the_dsl_has_an_all_rejected_case(self):
+    def test_every_filter_not_preceded_by_a_map_has_an_all_rejected_case(self):
+        """Order / slice ops before the first filter only permute or shorten
+        the list, so a candidate the filter rejects stays rejected. Checked
+        over every AST of up to 2 ops: the first filter's prefix is all that
+        matters, and every such prefix (filter first, or one op then filter)
+        occurs there."""
         for ast in enumerate_all():
-            if ast.filters:
-                self.assertTrue(has_reject_all_case(ast, generate_boundary_test_cases(ast)), ast.to_dict())
+            if ast.num_ops() > 2 or "filter" not in ast.categories():
+                continue
+            prefix = ast.categories()[: ast.categories().index("filter")]
+            if "map" not in prefix:
+                self.assertTrue(has_reject_all_case(ast, generate_boundary_test_cases(ast)), ast.tags())
 
+    def test_a_map_can_make_the_filter_a_tautology(self):
+        # doubling makes every element even: no input can empty that filter
+        ast = SemanticAST.of("map:mul_const:2", "filter:even")
+        self.assertFalse(has_reject_all_case(ast, generate_boundary_test_cases(ast)))
+        # ... while a map that leaves room for failure still gets its case
+        ast = SemanticAST.of("map:add_k", "filter:even")
+        self.assertTrue(has_reject_all_case(ast, generate_boundary_test_cases(ast)))
 
 if __name__ == "__main__":
     unittest.main()

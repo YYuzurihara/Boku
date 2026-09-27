@@ -15,7 +15,7 @@ class ModelConfig:
     n_heads: int = 6
     n_kv_heads: int = 6
     d_ff: int = 1024
-    max_seq_len: int = 512
+    max_seq_len: int = 256
     rope_theta: float = 1000.0
     norm_eps: float = 1e-5
     tie_embeddings: bool = True

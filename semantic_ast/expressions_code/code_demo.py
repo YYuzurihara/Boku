@@ -3,7 +3,7 @@ verified ``solve(xs, k)`` source out.
 
 Pipeline exercised here:
 
-    out/{train,val,test}.jsonl  (demo.py output: semantic AST + tests)
+    out/ast_{split}.jsonl  (demo.py output: semantic AST + tests)
         -> code_styles.select_styles   (tag-gated, rotated per AST)
         -> code_generator.variants     (one rendering per style)
         -> code_verifier.verify        (vs. the reference interpreter)
@@ -15,7 +15,7 @@ and, alongside it, a small committed gallery under ``expressions_code/``
 structural shape -- the corpus itself is far too large to commit, so that
 gallery is what a reviewer reads.
 
-Input semantic ASTs come from ``out/{train,val,test}.jsonl`` when demo.py
+Input semantic ASTs come from ``out/ast_{split}.jsonl`` when demo.py
 has been run; otherwise a deterministic sample is enumerated on the spot and
 its test cases generated here, so this script is useful before the full
 dataset exists.
@@ -73,7 +73,7 @@ def _sample_asts(limit: int) -> list[Item]:
 
     Used when out/*.jsonl is absent, and for the committed gallery -- so the
     gallery shows every composition pattern the generator has to handle
-    (single category, chains, filter+map+order, ...), every operation of the
+    (single op, repeated ops, every category sequence, ...), every operation of the
     vocabulary and every catalogue entry (including the tag-gated ones),
     rather than whatever the first N ASTs happen to be.
     """
@@ -83,7 +83,7 @@ def _sample_asts(limit: int) -> list[Item]:
         return {style.name for style in styles_for(ast)}
 
     def shape_of(ast: SemanticAST) -> set:
-        return {(ast.active_categories(), len(ast.filters), len(ast.map_ops), len(ast.slice_ops))}
+        return {ast.categories()}
 
     def tags_of(ast: SemanticAST) -> set:
         return set(ast.op_tags())
@@ -102,10 +102,15 @@ def _sample_asts(limit: int) -> list[Item]:
     # the gallery long before that, so the three are interleaved rather than
     # concatenated: taking them in turn keeps a truncated gallery balanced
     # across styles, structural shapes and atomic operations instead of
-    # spending every slot on the first axis. The 作問例 from homework.md leads,
-    # since that is the snippet a reader will want to compare against.
+    # spending every slot on the first axis. The 作問例 from homework.md (with
+    # its second filter dropped) leads, since that is the snippet a reader
+    # will want to compare against, followed by the same ops in reverse order
+    # to show that order changes the code.
     sweeps = [
-        [SemanticAST(filters=("even", "ge_k"), map_ops=(("mul_const", 2),), order_op="ascending")],
+        [
+            SemanticAST.of("filter:even", "map:mul_const:2", "order:ascending"),
+            SemanticAST.of("order:ascending", "map:mul_const:2", "filter:even"),
+        ],
         sweep(styles_of),
         sweep(shape_of),
         sweep(tags_of),
@@ -134,7 +139,7 @@ def _items_from_split(path: Path, limit: int) -> list[Item]:
             try:
                 ast = SemanticAST.from_dict(record["semantic_ast"])
             except SemanticASTError as exc:
-                # e.g. a file written before schema.py narrowed the vocabulary
+                # e.g. a file written before schema.py switched to the op-sequence format
                 raise SystemExit(
                     f"{path} holds a semantic AST the current schema rejects "
                     f"({record.get('spec_id')}: {exc}).\n"
@@ -204,7 +209,7 @@ def _write_gallery(records: list[dict]) -> None:
         "`code_demo.py` が生成したコードの抜粋（自動生成。手で編集しない）。",
         "意味ASTの構成パターンと原子操作を網羅するように選んだ意味ASTについて、",
         "適用できる`code_style`すべてでレンダリングしたもの。全件は",
-        "`semantic_ast/out/code_{train,val,test}.jsonl`（生成物、gitignore済み）にある。",
+        "`semantic_ast/out/code_{split}.jsonl`（生成物、gitignore済み）にある。",
         "",
         "各コードは参照インタプリタと全テストケースで一致することを確認済み",
         "（`verification`は`samples.jsonl`側に入っている）。",
@@ -253,6 +258,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--no-gallery", action="store_true", help="do not rewrite samples.jsonl / samples.md")
     parser.add_argument("--cross-check-seed", type=int, default=SEED + 1, help="seed for the extra random comparison against the reference interpreter (-1 to skip)")
     parser.add_argument("--sandbox", type=int, default=0, help="also run N gallery snippets through the Docker sandbox")
+    parser.add_argument("--splits", nargs="+", choices=SPLITS, default=list(SPLITS), help="splits to process (default: all)")
     parser.add_argument("--out-dir", type=Path, default=OUT_DIR)
     parser.add_argument("--show", type=int, default=2, help="example snippets to print per split")
     args = parser.parse_args(argv)
@@ -289,7 +295,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     # -- the corpus -----------------------------------------------------------
     sources: list[tuple[str, list[Item]]] = []
-    for split in SPLITS:
+    for split in args.splits:
         path = args.out_dir / f"ast_{split}.jsonl"
         if path.exists():
             sources.append((split, _items_from_split(path, args.limit)))
